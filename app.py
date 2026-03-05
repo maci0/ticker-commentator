@@ -2,6 +2,7 @@ import time
 import base64
 import os
 import json
+import re
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -15,6 +16,8 @@ from commentator.tts import iter_audio_chunks, pcm_chunks_to_wav
 from commentator.commentary import generate_commentary
 
 _APP_DEBUG = os.getenv("APP_DEBUG", "0") == "1"
+_MAX_COMMENTARY_HISTORY = 50
+_TICKER_SAFE_RE = re.compile(r"[^A-Z0-9.^\-]")
 
 st.set_page_config(page_title="Stock Commentator", layout="wide")
 st.title("Real-Time Stock Chart Commentator")
@@ -161,11 +164,13 @@ with col_chart:
             "width": "100%",
             "height": 700,
         }
+        # Sanitize ticker to prevent XSS in the raw HTML embed.
+        safe_ticker = _TICKER_SAFE_RE.sub("", ticker)
         components.html(
             f"""
 <div class="tradingview-widget-container" style="height:740px;width:100%">
   <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%"></div>
-  <div class="tradingview-widget-copyright"><a href="https://www.tradingview.com/symbols/{ticker}/" rel="noopener nofollow" target="_blank"><span class="blue-text">{ticker} chart</span></a><span class="trademark"> by TradingView</span></div>
+  <div class="tradingview-widget-copyright"><a href="https://www.tradingview.com/symbols/{safe_ticker}/" rel="noopener nofollow" target="_blank"><span class="blue-text">{safe_ticker} chart</span></a><span class="trademark"> by TradingView</span></div>
   <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
   {json.dumps(tv_config)}
   </script>
@@ -290,6 +295,9 @@ if need_commentary:
             st.exception(exc)
 
     st.session_state["commentary_history"].append(commentary)
+    # Cap history to prevent unbounded memory growth in long live sessions.
+    if len(st.session_state["commentary_history"]) > _MAX_COMMENTARY_HISTORY:
+        st.session_state["commentary_history"] = st.session_state["commentary_history"][-_MAX_COMMENTARY_HISTORY:]
     st.session_state["last_audio"] = audio
     st.session_state["last_price"] = current_price
     # Re-anchor timer at cycle end so long generations do not trigger rapid retries.

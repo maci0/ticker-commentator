@@ -10,7 +10,7 @@ uv sync
 uv run streamlit run app.py
 ```
 
-Optional debug run:
+Debug mode:
 
 ```bash
 APP_DEBUG=1 COMMENTARY_DEBUG=1 ORPHEUS_TTS_DEBUG=1 uv run streamlit run app.py
@@ -20,40 +20,27 @@ APP_DEBUG=1 COMMENTARY_DEBUG=1 ORPHEUS_TTS_DEBUG=1 uv run streamlit run app.py
 
 Pipeline:
 
-`User Input -> yfinance -> pandas analysis -> llama.cpp commentary -> emotion tag injection -> llama.cpp Orpheus tokens -> SNAC decode -> Streamlit audio playback`
+`User Input → yfinance → pandas analysis → llama.cpp commentary → emotion tag injection → llama.cpp Orpheus tokens → SNAC decode → Streamlit audio playback`
 
 Core files:
 
-- `app.py` - Streamlit UI, loads `.env` via `python-dotenv`, live refresh loop, chart rendering (Plotly), commentary + audio playback.
-- `commentator/data.py` - yfinance fetch helpers with logged errors.
-- `commentator/analysis.py` - technical summary (trend, RSI, SMA cross, volatility, volume trend).
-- `commentator/commentary.py` - sports-style one-liner generation with llama.cpp GGUF. Feeds back up to 5 prior lines for variety. Injects Orpheus emotion tags deterministically based on market sentiment.
-- `commentator/tts.py` - Orpheus token generation with llama.cpp + chunked SNAC decode.
-- `.env.example` - all configuration variables with defaults and comments.
+- `app.py` — Streamlit UI with live refresh, Plotly/TradingView charts, auto-playing audio.
+- `commentator/data.py` — yfinance fetch with ticker validation and logged errors.
+- `commentator/analysis.py` — Technical summary: trend, RSI(14), SMA 20/50 cross, ATR volatility, volume trend. Returns typed `AnalysisResult` dict.
+- `commentator/commentary.py` — Sports-style one-liner generation via llama.cpp GGUF. Injects Orpheus emotion tags based on market sentiment.
+- `commentator/tts.py` — Orpheus token generation via llama.cpp + chunked SNAC decode to PCM audio.
+- `commentator/llama_lock.py` — Shared threading lock for llama.cpp serialization.
 
-## Runtime Notes
-
-- First run downloads GGUF models and SNAC weights from Hugging Face.
-- Use `HF_TOKEN` to improve Hugging Face download reliability and rate limits.
-- On ROCm systems, commentary/TTS are pinned to a single GPU by default to avoid multi-device instability.
-
-## Test Script
+## Testing
 
 ```bash
-uv run python experiments/test_tts.py
-```
-
-Custom text/voice:
-
-```bash
-uv run python experiments/test_tts.py --text "Test line" --voice tara --out /tmp/orpheus_test.wav
+uv run python -m pytest tests/ -v
+uv run python -m pytest tests/ -v --cov=commentator --cov-report=term-missing
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and edit as needed. The app loads it automatically via `python-dotenv`. See `.env.example` for the full list of variables with defaults and comments.
-
-Key settings:
+Copy `.env.example` to `.env` and edit as needed. See `.env.example` for all variables with defaults.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -64,19 +51,15 @@ Key settings:
 | `ORPHEUS_LLAMA_GPU_LAYERS` | `-1` | GPU layers for TTS model (`-1` = all, `0` = CPU) |
 | `ORPHEUS_TTS_MAX_SECONDS` | `60` | Timeout to stop Orpheus repetition |
 
+## Runtime Notes
+
+- First run downloads GGUF models and SNAC weights from Hugging Face.
+- Use `HF_TOKEN` for faster downloads and higher rate limits.
+- On ROCm systems, models are pinned to a single GPU by default.
+
 ## Troubleshooting
 
-- **Commentary hangs/crashes after model load:**
-  - Try single-GPU pinning explicitly:
-    - `COMMENTARY_MAIN_GPU=0`
-    - `COMMENTARY_TENSOR_SPLIT=1.0`
-  - Reduce GPU pressure:
-    - `COMMENTARY_GPU_LAYERS=0` (recommended on ROCm when TTS is GPU)
-    - `COMMENTARY_GPU_LAYERS=20` (optional partial offload)
-- **No audio output:**
-  - Enable logs: `ORPHEUS_TTS_DEBUG=1`
-  - Verify llama-cpp-python is ROCm-enabled and model loads without errors.
-- **Need stack traces in UI:**
-  - Run with `APP_DEBUG=1 COMMENTARY_DEBUG=1`.
-- **`n_ctx_per_seq < n_ctx_train` warning:**
-  - Harmless. The 4096 context window is more than enough for commentary prompts.
+- **Commentary hangs/crashes**: Try `COMMENTARY_GPU_LAYERS=0` (CPU fallback) or explicit GPU pinning via `COMMENTARY_MAIN_GPU=0`.
+- **No audio**: Enable `ORPHEUS_TTS_DEBUG=1` and check logs.
+- **Stack traces in UI**: Run with `APP_DEBUG=1`.
+- **`n_ctx_per_seq < n_ctx_train` warning**: Harmless — 4096 context is sufficient for commentary prompts.

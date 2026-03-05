@@ -1,17 +1,23 @@
+"""Generate sports-style stock commentary via llama.cpp."""
+
+import logging
 import os
 import random
 import re
-import traceback
 from typing import Any
 
 from huggingface_hub import hf_hub_download
+
 from commentator.llama_lock import LLAMA_CPP_LOCK
 
 try:
     from llama_cpp import Llama
-except Exception:
+except ImportError:
     Llama = None
 
+logger = logging.getLogger(__name__)
+
+__all__ = ["generate_commentary", "SYSTEM_PROMPT"]
 
 SYSTEM_PROMPT = """\
 You are an over-the-top sports commentator calling LIVE stock market action — John Madden meets WWE.
@@ -48,12 +54,8 @@ _EMOTE_CHANCE_2 = float(os.getenv("COMMENTARY_EMOTE_CHANCE_2", "0.50"))
 _COMMENTARY_LLM = None
 
 
-def _debug(message: str) -> None:
-    if _COMMENTARY_DEBUG:
-        print(f"Commentary debug: {message}")
-
-
-def _get_commentary_llm():
+def _get_commentary_llm() -> "Llama":
+    """Lazy-init the commentary LLM singleton (thread-safe double-checked lock)."""
     global _COMMENTARY_LLM
     if _COMMENTARY_LLM is not None:
         return _COMMENTARY_LLM
@@ -66,16 +68,13 @@ def _get_commentary_llm():
             repo_id=_COMMENTARY_GGUF_REPO,
             filename=_COMMENTARY_GGUF_FILE,
         )
-        _debug(f"loading gguf={gguf_path}")
-        if _COMMENTARY_GPU_LAYERS == 0:
-            _debug(f"llama init ctx={_COMMENTARY_CTX} gpu_layers=0 (CPU only)")
-        else:
-            _debug(
-                "llama init "
-                f"ctx={_COMMENTARY_CTX} gpu_layers={_COMMENTARY_GPU_LAYERS} "
-                f"main_gpu={_COMMENTARY_MAIN_GPU} tensor_split={_COMMENTARY_TENSOR_SPLIT}"
-            )
-            _debug("compute backend=GPU offload enabled")
+        logger.debug(
+            "Loading commentary GGUF: %s (ctx=%d, gpu_layers=%d, main_gpu=%d)",
+            gguf_path,
+            _COMMENTARY_CTX,
+            _COMMENTARY_GPU_LAYERS,
+            _COMMENTARY_MAIN_GPU,
+        )
         _COMMENTARY_LLM = Llama(
             model_path=gguf_path,
             n_ctx=_COMMENTARY_CTX,
@@ -89,8 +88,9 @@ def _get_commentary_llm():
 
 
 def _generate_with_llama_cpp(user_prompt: str) -> str:
+    """Run a single chat completion and return the cleaned text."""
     llm = _get_commentary_llm()
-    _debug("running create_chat_completion")
+    logger.debug("Running create_chat_completion")
     with LLAMA_CPP_LOCK:
         response: Any = llm.create_chat_completion(
             messages=[
@@ -103,9 +103,9 @@ def _generate_with_llama_cpp(user_prompt: str) -> str:
             stream=False,
         )
     text = str(response["choices"][0]["message"]["content"])
-    # Strip Qwen3 thinking blocks if present
+    # Strip Qwen3 thinking blocks if present.
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    # Strip banned phrases the LLM tends to overuse
+    # Strip banned phrases the LLM tends to overuse.
     text = re.sub(r"\b[Ff]olks\b[,!]?\s*", "", text)
     text = re.sub(r"\b[Ll]adies and [Gg]entlemen[,!]?\s*", "", text)
     return text.strip()
@@ -114,13 +114,18 @@ def _generate_with_llama_cpp(user_prompt: str) -> str:
 _POSITIVE_TAGS = ["<laugh>", "<chuckle>"]
 _NEGATIVE_TAGS = ["<sigh>", "<groan>"]
 _SURPRISE_TAGS = ["<gasp>"]
-# Available: "<cough>"
 _NEUTRAL_TAGS = ["<chuckle>", "<sniffle>", "<yawn>"]
 
 
-def _inject_emotion_tags(text: str, analysis: dict) -> str:
-    """Insert 1-2 Orpheus emotion tags based on market sentiment."""
-    # Strip any tags the LLM may have hallucinated (unlikely but possible)
+def _inject_emotion_tags(text: str, analysis: dict[str, Any]) -> str:
+    """Insert 1-2 Orpheus emotion tags based on market sentiment.
+
+    Tags are chosen deterministically by sentiment category, then placed
+    probabilistically — first after the earliest punctuation pause, second
+    appended to the end.  The randomness here is cosmetic, not security-
+    relevant: it controls voice inflection variety.
+    """
+    # Strip any tags the LLM may have hallucinated.
     text = re.sub(r"<(laugh|chuckle|sigh|cough|sniffle|groan|yawn|gasp)>", "", text)
     text = text.strip()
     if not text:
@@ -130,7 +135,7 @@ def _inject_emotion_tags(text: str, analysis: dict) -> str:
     change = abs(analysis.get("price_change_pct", 0))
     volatility = analysis.get("volatility", "unknown")
 
-    # Pick tags based on sentiment
+    # Pick tag pool based on sentiment.
     if trend == "bullish":
         pool = _POSITIVE_TAGS
     elif trend == "bearish":
@@ -138,14 +143,14 @@ def _inject_emotion_tags(text: str, analysis: dict) -> str:
     else:
         pool = _NEUTRAL_TAGS
 
-    # Big moves or high volatility get a surprise tag mixed in
+    # Big moves or high volatility get a surprise tag mixed in.
     if change > 3 or volatility == "high":
         pool = pool + _SURPRISE_TAGS
 
     tag1 = random.choice(pool)
     tag2 = random.choice([t for t in pool if t != tag1] or pool)
 
-    # Insert first tag after the first punctuation/pause
+    # Insert first tag after the first punctuation/pause.
     if random.random() < _EMOTE_CHANCE_1:
         pause = re.search(r"(?<!\d)[,;!?…—]|\.(?!\d)", text)
         if pause:
@@ -154,7 +159,7 @@ def _inject_emotion_tags(text: str, analysis: dict) -> str:
         else:
             text = f"{tag1} {text}"
 
-    # Only add second tag some of the time to feel natural
+    # Only add second tag some of the time to feel natural.
     if random.random() < _EMOTE_CHANCE_2:
         text = text.rstrip(".!") + f" {tag2}"
 
@@ -162,12 +167,16 @@ def _inject_emotion_tags(text: str, analysis: dict) -> str:
 
 
 def generate_commentary(
-    analysis: dict,
+    analysis: dict[str, Any],
     ticker: str,
     company_name: str,
     previous_commentary: list[str] | None = None,
 ) -> str:
-    """Generate sports-style comedy commentary from stock analysis."""
+    """Generate sports-style comedy commentary from stock analysis.
+
+    Never raises — returns a safe fallback string on any LLM failure.
+    Internal errors are logged but never exposed to the caller.
+    """
     trend = analysis.get("trend", "sideways")
     change = analysis.get("price_change_pct", 0)
     price = analysis.get("current_price", 0)
@@ -178,7 +187,6 @@ def generate_commentary(
     rsi = analysis.get("rsi")
     sma_cross = analysis.get("sma_cross")
 
-    # Lead with the live movement if available
     live_move = analysis.get("live_move")
     live_move_pct = analysis.get("live_move_pct")
     live_dir = analysis.get("live_direction")
@@ -208,7 +216,6 @@ def generate_commentary(
         user_prompt += f"\n- Moving average signal: {label}"
 
     if previous_commentary:
-        # Feed last ~5 lines so the model avoids repeating itself
         recent = previous_commentary[-5:]
         numbered = "\n".join(f"  {i+1}. {line}" for i, line in enumerate(recent))
         user_prompt += f"\n- Prior commentary (don't repeat these phrases, ignore any stock names in them):\n{numbered}"
@@ -216,8 +223,6 @@ def generate_commentary(
     try:
         text = _generate_with_llama_cpp(user_prompt)
         return _inject_emotion_tags(text, analysis)
-    except Exception as e:
-        _debug(f"error={type(e).__name__}: {e}")
-        if _COMMENTARY_DEBUG:
-            traceback.print_exc()
-        return f"The commentator is having technical difficulties! (Error: {e})"
+    except Exception:
+        logger.exception("Commentary generation failed")
+        return "The commentator is having technical difficulties!"

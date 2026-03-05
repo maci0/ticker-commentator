@@ -1,7 +1,7 @@
 [project]
 name = "ticker-commentator"
 version = "0.1.0"
-description = "Add your description here"
+description = "Real-time stock chart commentary with a sports announcer voice, powered by llama.cpp and SNAC TTS"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -18,7 +18,12 @@ dependencies = [
     "torchvision>=0.25.0",
     "llama-cpp-python>=0.3.16",
     "python-dotenv",
+]
+
+[dependency-groups]
+dev = [
     "pytest>=8.4.0",
+    "pytest-cov>=6.0",
 ]
 
 [tool.uv.sources]
@@ -27,8 +32,11 @@ triton-rocm = { index = "pytorch-rocm" }
 torchaudio = { index = "pytorch-rocm" }
 torchvision = { index = "pytorch-rocm" }
 
-
 [[tool.uv.index]]
 name = "pytorch-rocm"
 url = "https://download.pytorch.org/whl/rocm7.1"
 explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
