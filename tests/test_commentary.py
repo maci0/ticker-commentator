@@ -93,21 +93,21 @@ def test_tag_prepended_when_no_punctuation() -> None:
     assert result.startswith("<")
 
 
-def test_high_volatility_adds_gasp() -> None:
-    """High volatility should add gasp to the pool."""
+def test_high_volatility_uses_drama_pool() -> None:
+    """High volatility should use the high-drama pool (surprise tag = laugh)."""
     with patch("commentator.commentary.random") as mock_rng:
         mock_rng.random.return_value = 0.0
-        # Force selection of the last element (gasp, added by high vol)
+        # Force selection of the last element (the surprise tag added by high drama)
         mock_rng.choice.side_effect = lambda pool: pool[-1]
         result = _inject_emotion_tags(
             "Wild swings here!",
             {"trend": "bullish", "price_change_pct": 5.0, "volatility": "high"},
         )
-    assert "gasp" in _get_tags(result)
+    assert "laugh" in _get_tags(result)
 
 
-def test_big_move_adds_gasp() -> None:
-    """Price change > 3% should add gasp regardless of volatility."""
+def test_big_move_uses_drama_pool() -> None:
+    """Price change > 3% should use the high-drama pool regardless of volatility."""
     with patch("commentator.commentary.random") as mock_rng:
         mock_rng.random.return_value = 0.0
         mock_rng.choice.side_effect = lambda pool: pool[-1]
@@ -115,7 +115,7 @@ def test_big_move_adds_gasp() -> None:
             "Massive rally!",
             {"trend": "bullish", "price_change_pct": 4.0, "volatility": "low"},
         )
-    assert "gasp" in _get_tags(result)
+    assert "laugh" in _get_tags(result)
 
 
 # ── Tag stripping ──────────────────────────────────────────────────

@@ -66,8 +66,11 @@ _COMMENTARY_DEBUG = os.getenv("COMMENTARY_DEBUG", "0") == "1"
 _COMMENTARY_WARMUP = os.getenv("COMMENTARY_WARMUP", "1") == "1"
 # Probability values are clamped to [0.0, 1.0] so out-of-range config never
 # causes always-on or always-off tag injection.
-_EMOTE_CHANCE_1 = max(0.0, min(1.0, env_float("COMMENTARY_EMOTE_CHANCE_1", 0.75)))
-_EMOTE_CHANCE_2 = max(0.0, min(1.0, env_float("COMMENTARY_EMOTE_CHANCE_2", 0.50)))
+# Defaults lowered (was 0.75/0.50) after measuring that emotion tags degrade
+# clarity (no-tag WER 14% vs ~30-60% with tags) — most lines now stay clean,
+# a minority get a single tag for character. See tts_eval/.
+_EMOTE_CHANCE_1 = max(0.0, min(1.0, env_float("COMMENTARY_EMOTE_CHANCE_1", 0.4)))
+_EMOTE_CHANCE_2 = max(0.0, min(1.0, env_float("COMMENTARY_EMOTE_CHANCE_2", 0.15)))
 _COMMENTARY_TEMPERATURE = env_float("COMMENTARY_TEMPERATURE", 0.7)
 _COMMENTARY_TOP_P = env_float("COMMENTARY_TOP_P", 0.9)
 # Small models (e.g. Qwen3.5-0.8B) loop without a repeat penalty; >1.0 keeps the
@@ -180,12 +183,16 @@ def _generate_with_llama_cpp(user_prompt: str) -> str:
     return text.strip()
 
 
+# Tag pools pruned to the three Orpheus speaks cleanly in a commentator voice:
+# <laugh>, <chuckle>, <sigh>. Dropped <gasp>/<groan> (triggered runaway/looping
+# generation — 70-80s decode timeouts in tts_eval) and <cough>/<sniffle>/<yawn>
+# (low naturalness and off-character for a hyped announcer).
 _POSITIVE_TAGS = ["<laugh>", "<chuckle>"]
-_NEGATIVE_TAGS = ["<sigh>", "<groan>"]
-_SURPRISE_TAGS = ["<gasp>"]
-# <chuckle> appears in both _POSITIVE_TAGS and _NEUTRAL_TAGS: it is lighter
-# than <laugh> and suits sideways-market commentary as well as bullish.
-_NEUTRAL_TAGS = ["<chuckle>", "<sniffle>", "<yawn>"]
+_NEGATIVE_TAGS = ["<sigh>"]
+# High-drama "surprise" reuses <laugh> instead of the runaway-prone <gasp>.
+_SURPRISE_TAGS = ["<laugh>"]
+# <chuckle> is lighter than <laugh> and suits sideways-market commentary.
+_NEUTRAL_TAGS = ["<chuckle>"]
 _POSITIVE_TAGS_SURPRISED = _POSITIVE_TAGS + _SURPRISE_TAGS
 _NEGATIVE_TAGS_SURPRISED = _NEGATIVE_TAGS + _SURPRISE_TAGS
 _NEUTRAL_TAGS_SURPRISED = _NEUTRAL_TAGS + _SURPRISE_TAGS
@@ -196,10 +203,11 @@ def _inject_emotion_tags(text: str, analysis: dict[str, Any]) -> str:
 
     The tag pool is determined by sentiment category (bullish → positive,
     bearish → negative, sideways → neutral). If |price_change_pct| > 3% or
-    volatility is "high", <gasp> is added to the pool regardless of sentiment.
-    Individual tags are drawn randomly from that pool, then placed
-    probabilistically — first after the earliest punctuation pause (or
-    prepended if none exists), second appended to the end.
+    volatility is "high", a high-drama pool is used. Individual tags are drawn
+    randomly from that pool, then placed probabilistically — first after the
+    earliest punctuation pause (or prepended if none exists), second appended to
+    the end. Tags are kept infrequent (see _EMOTE_CHANCE_*) because they reduce
+    speech clarity.
     """
     # Strip any tags the LLM may have hallucinated; fast-path avoids regex
     # overhead (which includes scanning the full string) when no tags present.
