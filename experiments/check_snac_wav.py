@@ -5,13 +5,14 @@ Streams tokens from Ollama/Orpheus for one sentence, decodes with both
 ONNX and PyTorch SNAC, and saves WAV files for comparison.
 
 Usage:
-    uv run python scripts/check_snac_wav.py
+    uv run python experiments/check_snac_wav.py
 """
 
 import http.client
 import io
 import json
 import os
+import sys
 import urllib.parse
 import wave
 
@@ -91,7 +92,7 @@ def _parse_token_ids(raw_tokens: list[str]) -> list[int]:
             num = int(tok[14:-1]) - 10 - ((count % 7) * 4096)
         except ValueError:
             continue
-        if num <= 0:
+        if num < 0:
             continue
         ids.append(num)
         count += 1
@@ -123,7 +124,6 @@ def _reshape_numpy(token_ids: list[int]):
 
 
 def _save_wav(path: str, audio: np.ndarray):
-    # Flatten and convert to int16
     audio = audio.flatten()
     audio_int16 = (audio * 32767).astype(np.int16)
     buf = io.BytesIO()
@@ -152,8 +152,8 @@ def main():
     )
 
     if len(token_ids) < 7:
-        print("ERROR: Not enough tokens to decode.")
-        return
+        print("ERROR: Not enough tokens to decode.", file=sys.stderr)
+        raise SystemExit(1)
 
     codes_np = _reshape_numpy(token_ids)
 

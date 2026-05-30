@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dev dependencies
+        run: uv sync --only-group dev
+
+      - name: Lint with ruff
+        run: make lint
+
+      - name: Format check
+        run: make fmt-check
+
+  test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      # Install CPU torch before other deps to avoid ROCm/HIP resolution on
+      # standard runners. Tests mock all GPU calls so any recent torch works.
+      - name: Install CPU torch
+        run: |
+          uv pip install --system torch torchaudio torchvision \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      # Install remaining deps from lockfile, skipping ROCm-only packages
+      # already handled above. Ensures CI uses pinned versions from uv.lock.
+      - name: Install project and dev dependencies
+        run: |
+          uv export --all-groups --no-hashes --format requirements-txt \
+            | grep -Ev '^(torch|torchaudio|torchvision|triton)' \
+            > /tmp/ci-requirements.txt
+          uv pip install --system -r /tmp/ci-requirements.txt
+
+      - name: Run tests
+        run: pytest --tb=short --cov=commentator --cov-report=term-missing
+
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install pip-audit
+        run: uv tool install pip-audit
+
+      - name: Audit dependencies for known vulnerabilities
+        run: uv export --no-hashes --format requirements-txt | uv tool run pip-audit -r /dev/stdin

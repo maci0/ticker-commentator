@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""Test Orpheus TTS via llama.cpp (PyTorch SNAC decode)."""
 import argparse
 import os
 import sys
@@ -5,12 +7,13 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from commentator.tts import text_to_speech
+from commentator.tts import VALID_VOICES, text_to_speech
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Test Orpheus TTS via Ollama tokens (PyTorch SNAC decode)"
+        description="Test Orpheus TTS via llama.cpp (PyTorch SNAC decode)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--text",
@@ -20,13 +23,15 @@ def main() -> int:
     parser.add_argument(
         "--voice",
         default="zac",
-        help="Voice name (tara, leah, jess, leo, dan, mia, zac, zoe)",
+        choices=sorted(VALID_VOICES),
+        help="Voice name",
     )
     parser.add_argument(
         "--speed",
         type=float,
         default=1.3,
-        help="Speech speed multiplier (0.8 to 1.4)",
+        metavar="SPEED",
+        help="Speech speed multiplier (0.8–1.4)",
     )
     parser.add_argument(
         "--out",
@@ -35,9 +40,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if not args.text.strip():
+        parser.error("--text must not be empty")
+
+    if not (0.8 <= args.speed <= 1.4):
+        parser.error(f"--speed must be between 0.8 and 1.4, got {args.speed}")
+
     audio = text_to_speech(args.text, voice=args.voice, speed=args.speed)
     if not audio:
-        print("TTS failed: no audio returned")
+        print("TTS failed: no audio returned", file=sys.stderr)
         return 1
 
     out_dir = os.path.dirname(args.out)

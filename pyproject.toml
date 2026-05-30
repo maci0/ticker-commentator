@@ -5,26 +5,34 @@ description = "Real-time stock chart commentary with a sports announcer voice, p
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "huggingface-hub",
-    "numpy",
-    "pandas",
-    "plotly",
-    "snac",
+    "huggingface-hub>=0.23.0",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "plotly>=5.18.0",
+    "snac>=1.2.1",
     "torch>=2.10",
     "triton-rocm>=3.6.0; sys_platform == 'linux'",
-    "streamlit",
-    "yfinance",
+    "streamlit>=1.36.0",
+    "yfinance>=0.2.40",
     "torchaudio>=2.10.0",
     "torchvision>=0.25.0",
-    "llama-cpp-python>=0.3.16",
-    "python-dotenv",
+    "llama-cpp-python>=0.3.23",
+    "python-dotenv>=1.0.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.4.0",
     "pytest-cov>=6.0",
+    "ruff>=0.4.0",
 ]
+
+[tool.uv]
+# Build llama-cpp-python from source so the ROCm/HIP CMAKE_ARGS below take
+# effect (prebuilt PyPI wheels are CPU-only). Requires CMAKE_ARGS in the
+# environment at sync time, e.g.:
+#   CMAKE_ARGS="-DGGML_HIP=on -DAMDGPU_TARGETS=gfx1100" uv sync
+no-binary-package = ["llama-cpp-python"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-rocm" }
@@ -40,3 +48,19 @@ explicit = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["commentator"]
+omit = ["tests/*", "experiments/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 70
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["experiments/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

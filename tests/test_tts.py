@@ -1,22 +1,29 @@
 """Tests for commentator.tts pure functions.
 
 Tests _format_prompt, _speed_to_generation, _turn_token_into_id,
-_iter_custom_tokens_from_text_stream, and pcm_chunks_to_wav without
-requiring GPU or model downloads.
+_iter_custom_tokens_from_text_stream, _decode_frames_to_pcm,
+pcm_chunks_to_wav, iter_audio_chunks (voice validation), and VALID_VOICES
+without requiring GPU or model downloads.
 """
 
-import struct
-import wave
 import io
+import wave
+from unittest.mock import patch
+
+import pytest
 
 from commentator.tts import (
+    _TEMPERATURE,
+    VALID_VOICES,
+    _decode_frames_to_pcm,
     _format_prompt,
+    _iter_custom_tokens_from_text_stream,
     _speed_to_generation,
     _turn_token_into_id,
-    _iter_custom_tokens_from_text_stream,
+    iter_audio_chunks,
     pcm_chunks_to_wav,
+    text_to_speech,
 )
-
 
 # ── _format_prompt ──────────────────────────────────────────────────
 
@@ -37,33 +44,58 @@ def test_format_prompt_empty_text() -> None:
 def test_speed_at_lower_bound() -> None:
     """Speed 0.8 should produce baseline temperature."""
     result = _speed_to_generation(0.8)
-    assert abs(result["temperature"] - 0.6) < 0.01
+    assert abs(result["temperature"] - _TEMPERATURE) < 0.01
     assert abs(result["repeat_penalty"] - 1.1) < 0.01
 
 
 def test_speed_at_upper_bound() -> None:
-    """Speed 1.4 should produce max temperature adjustment."""
+    """Speed 1.4 should produce max temperature adjustment (+0.4 above baseline)."""
     result = _speed_to_generation(1.4)
-    assert abs(result["temperature"] - 1.0) < 0.01
+    assert abs(result["temperature"] - (_TEMPERATURE + 0.4)) < 0.01
     assert abs(result["repeat_penalty"] - 1.3) < 0.01
 
 
 def test_speed_below_range_clamped() -> None:
-    """Speed below 0.8 should clamp to baseline."""
+    """Speed below 0.8 should clamp to baseline and emit a warning."""
     result = _speed_to_generation(0.0)
-    assert abs(result["temperature"] - 0.6) < 0.01
+    assert abs(result["temperature"] - _TEMPERATURE) < 0.01
 
 
 def test_speed_above_range_clamped() -> None:
-    """Speed above 1.4 should clamp to max."""
+    """Speed above 1.4 should clamp to max (+0.4 above baseline) and emit a warning."""
     result = _speed_to_generation(5.0)
-    assert abs(result["temperature"] - 1.0) < 0.01
+    assert abs(result["temperature"] - (_TEMPERATURE + 0.4)) < 0.01
+
+
+def test_speed_out_of_range_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """Out-of-range speed values should log a warning."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="commentator.tts"):
+        _speed_to_generation(0.0)
+    assert any("outside [0.8, 1.4]" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="commentator.tts"):
+        _speed_to_generation(2.0)
+    assert any("outside [0.8, 1.4]" in r.message for r in caplog.records)
+
+
+def test_speed_in_range_no_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """In-range speed values should not log a warning."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="commentator.tts"):
+        _speed_to_generation(1.0)
+    assert not any("outside [0.8, 1.4]" in r.message for r in caplog.records)
 
 
 def test_speed_midpoint() -> None:
-    """Speed at midpoint (1.1) should produce interpolated values."""
+    """Speed at midpoint (1.1) should produce the exact interpolated values."""
+    speed_norm = (1.1 - 0.8) / 0.6  # 0.5
     result = _speed_to_generation(1.1)
-    assert 0.6 < result["temperature"] < 1.0
+    assert result["temperature"] == pytest.approx(_TEMPERATURE + 0.4 * speed_norm, abs=0.001)
+    assert result["repeat_penalty"] == pytest.approx(1.1 + 0.2 * speed_norm, abs=0.001)
 
 
 # ── _turn_token_into_id ────────────────────────────────────────────
@@ -132,6 +164,56 @@ def test_large_buffer_trimmed() -> None:
     assert tokens == [7]
 
 
+# ── _decode_frames_to_pcm (early returns, no SNAC required) ─────────
+
+
+def test_decode_frames_insufficient_frames_returns_none() -> None:
+    """Fewer than 4 complete frames (28 tokens) should return None without loading SNAC."""
+    # 3 frames = 21 tokens, below the 4-frame minimum
+    assert _decode_frames_to_pcm(list(range(21))) is None
+
+
+def test_decode_frames_empty_returns_none() -> None:
+    """Zero tokens (0 frames) should return None."""
+    assert _decode_frames_to_pcm([]) is None
+
+
+def test_decode_frames_out_of_range_high_returns_none() -> None:
+    """Any token >= 4096 in any codebook position should return None before loading SNAC."""
+    # 4 frames (28 tokens), first token is out of range
+    tokens = [0] * 28
+    tokens[0] = 4096
+    assert _decode_frames_to_pcm(tokens) is None
+
+
+def test_decode_frames_negative_token_returns_none() -> None:
+    """Any negative token should return None before loading SNAC."""
+    tokens = [0] * 28
+    tokens[0] = -1
+    assert _decode_frames_to_pcm(tokens) is None
+
+
+def test_decode_frames_out_of_range_in_codes1_returns_none() -> None:
+    """An out-of-range token at position 1 (codes_1 column) should return None."""
+    # 4 frames = 28 tokens; position 1 maps to arr[0, 1] → codes_1
+    tokens = [0] * 28
+    tokens[1] = 4096
+    assert _decode_frames_to_pcm(tokens) is None
+
+
+def test_decode_frames_out_of_range_in_codes2_returns_none() -> None:
+    """An out-of-range token at position 2 (codes_2 column) should return None."""
+    # 4 frames = 28 tokens; position 2 maps to arr[0, 2] → codes_2
+    tokens = [0] * 28
+    tokens[2] = 4096
+    assert _decode_frames_to_pcm(tokens) is None
+
+
+def test_decode_frames_at_27_tokens_returns_none() -> None:
+    """27 tokens = 3 complete frames, one below the 4-frame minimum; must return None."""
+    assert _decode_frames_to_pcm(list(range(27))) is None
+
+
 # ── pcm_chunks_to_wav ───────────────────────────────────────────────
 
 
@@ -169,3 +251,46 @@ def test_wav_empty_chunks() -> None:
     buf = io.BytesIO(result)
     with wave.open(buf, "rb") as wf:
         assert wf.getnframes() == 0
+
+
+# ── VALID_VOICES and voice validation ───────────────────────────────
+
+
+def test_valid_voices_non_empty() -> None:
+    assert len(VALID_VOICES) > 0
+
+
+def test_valid_voices_contains_defaults() -> None:
+    """The two default voice values used in the codebase must be in VALID_VOICES."""
+    assert "zac" in VALID_VOICES
+    assert "leo" in VALID_VOICES
+
+
+def test_iter_audio_chunks_invalid_voice_raises() -> None:
+    with pytest.raises(ValueError, match="Unknown voice"):
+        iter_audio_chunks("hello", voice="not_a_real_voice")
+
+
+# ── text_to_speech ───────────────────────────────────────────────────
+
+
+def test_text_to_speech_invalid_voice_raises() -> None:
+    """text_to_speech should propagate ValueError for an unknown voice."""
+    with pytest.raises(ValueError, match="Unknown voice"):
+        text_to_speech("hello", voice="not_a_real_voice")
+
+
+def test_text_to_speech_returns_none_when_no_audio() -> None:
+    """text_to_speech should return None when iter_audio_chunks yields no chunks."""
+    with patch("commentator.tts.iter_audio_chunks", return_value=iter([])):
+        result = text_to_speech("hello", voice="zac")
+    assert result is None
+
+
+def test_text_to_speech_returns_wav_bytes() -> None:
+    """text_to_speech should return valid WAV bytes when chunks are produced."""
+    pcm = b"\x00\x00" * 100
+    with patch("commentator.tts.iter_audio_chunks", return_value=iter([pcm])):
+        result = text_to_speech("hello", voice="zac")
+    assert result is not None
+    assert result[:4] == b"RIFF"  # WAV file magic bytes
