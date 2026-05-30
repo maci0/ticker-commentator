@@ -49,6 +49,12 @@ _MAX_DECODE_SECONDS = max(1.0, env_float("ORPHEUS_TTS_MAX_SECONDS", 60.0))
 # SNAC frames per decode batch (1 frame = 7 tokens).
 # Must be >= 1; 0 would make the accumulation condition always true.
 _CHUNK_FRAMES = max(1, env_int("ORPHEUS_CHUNK_FRAMES", 24))
+# Frames in the FIRST decoded chunk only. A smaller first chunk cuts
+# time-to-first-audio when streaming (e.g. 8 frames ≈ 0.4s vs 24 ≈ 1.3s) while
+# the rest decode at _CHUNK_FRAMES, so only one extra batch boundary is added
+# (SNAC decodes each batch independently). Clamped to [4, _CHUNK_FRAMES]: SNAC
+# needs ≥4 frames, and it never exceeds the steady-state batch size.
+_FIRST_CHUNK_FRAMES = min(_CHUNK_FRAMES, max(4, env_int("ORPHEUS_FIRST_CHUNK_FRAMES", 8)))
 
 _CUSTOM_TOKEN_RE = re.compile(r"<custom_token_(\d+)>")
 
@@ -394,6 +400,7 @@ def _iter_audio_chunks_gen(
     count = 0  # valid-token counter; determines codebook position in _turn_token_into_id
     total_tokens = 0
     dropped_chunks = 0
+    first_chunk_done = False  # the first emitted chunk uses _FIRST_CHUNK_FRAMES
 
     try:
         for i, raw_token in enumerate(token_gen):
@@ -414,13 +421,17 @@ def _iter_audio_chunks_gen(
             pending_tokens.append(token)
             count += 1
 
-            if len(pending_tokens) >= _CHUNK_FRAMES * 7:
-                pcm = _decode_frames_to_pcm(pending_tokens[: _CHUNK_FRAMES * 7])
+            # First emitted chunk is smaller (faster first audio when streaming);
+            # subsequent chunks use the full batch size.
+            chunk_frames = _CHUNK_FRAMES if first_chunk_done else _FIRST_CHUNK_FRAMES
+            if len(pending_tokens) >= chunk_frames * 7:
+                pcm = _decode_frames_to_pcm(pending_tokens[: chunk_frames * 7])
                 if pcm:
                     yield pcm
+                    first_chunk_done = True
                 else:
                     dropped_chunks += 1
-                del pending_tokens[: _CHUNK_FRAMES * 7]
+                del pending_tokens[: chunk_frames * 7]
 
         # Drain remaining pending tokens in frame-aligned chunks
         # (min 4 frames required by SNAC decoder).
