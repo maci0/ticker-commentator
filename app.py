@@ -109,11 +109,15 @@ with st.sidebar:
     st.divider()
 
     _refresh_max = 5 if period == "15m" else 120
+    # For the 15m window the max is 5s, so the min must be below it or the slider
+    # raises "min_value must be less than max_value" and crashes the app.
+    _refresh_min = 1 if period == "15m" else 5
+    _refresh_default = max(_refresh_min, min(15, _refresh_max))
     refresh_interval = st.slider(
         "Refresh interval (seconds)",
-        5,
+        _refresh_min,
         _refresh_max,
-        min(15, _refresh_max),
+        _refresh_default,
         key="refresh_interval",
         help=(
             "Minimum time between updates (Live Mode only). Actual wait"
