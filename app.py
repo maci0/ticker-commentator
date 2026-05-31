@@ -5,6 +5,7 @@ triggers commentary and TTS generation, and drives the live-mode auto-refresh
 loop. .env is loaded by commentator/__init__.py on first import.
 """
 import base64
+import html
 import json
 import logging
 import os
@@ -97,6 +98,38 @@ def _persona_emoji(name: str) -> str:
 def _persona_label(name: str) -> str:
     emoji, _ = _PERSONA_UI.get(name, ("🎙️", ""))
     return f"{emoji} {name.replace('_', ' ').title()}"
+
+
+# Strips Orpheus emotion-tag markers (and any stray angle-bracket directives) for
+# display — they steer the voice but shouldn't be shown as literal "<chuckle>".
+_DISPLAY_TAG_RE = re.compile(r"<[^>]+>")
+_TREND_COLOR = {"bullish": "#26a69a", "bearish": "#ef5350"}
+
+
+def _clean_text(text: str) -> str:
+    """Commentary text without emotion tags, whitespace-collapsed, for display."""
+    return re.sub(r"\s+", " ", _DISPLAY_TAG_RE.sub("", text)).strip()
+
+
+def _render_commentary_card(
+    text: str, personality: str, trend: str, *, live: bool = False
+) -> None:
+    """Render the commentary as a styled broadcast card (clean text, persona
+    label, sentiment-colored accent)."""
+    color = _TREND_COLOR.get(trend, "#8899aa")
+    badge = "🔴 ON AIR" if live else "🎙️"
+    safe = html.escape(_clean_text(text)) or "…"
+    st.markdown(
+        f'<div style="border-left:5px solid {color};'
+        f' background:rgba(127,127,127,0.08); padding:14px 18px;'
+        f' border-radius:8px; margin:4px 0 12px 0;">'
+        f'<div style="font-size:0.78rem; letter-spacing:.04em; opacity:.6;'
+        f' text-transform:uppercase; margin-bottom:6px;">'
+        f"{html.escape(_persona_label(personality))} &nbsp;·&nbsp; {badge}</div>"
+        f'<div style="font-size:1.35rem; line-height:1.55; font-weight:500;">'
+        f"{safe}</div></div>",
+        unsafe_allow_html=True,
+    )
 
 
 # --- Sidebar controls ---
@@ -563,7 +596,7 @@ if need_commentary:
     if _pf is not None:
         commentary, audio, audio_duration = _pf
         logger.info("commentary_served_from_prefetch ticker=%s", ticker)
-        st.write(commentary)
+        _render_commentary_card(commentary, personality, analysis["trend"], live=live)
         st.session_state["audio_duration"] = audio_duration or float(refresh_interval)
     else:
         # generate_commentary handles LLM failures internally; this guard catches
@@ -586,7 +619,7 @@ if need_commentary:
             st.error("Commentary unavailable — please try again.")
             if _APP_DEBUG:
                 st.exception(exc)
-        st.write(commentary)
+        _render_commentary_card(commentary, personality, analysis["trend"], live=live)
         _stream = None
         try:
             with st.spinner("Synthesizing audio..."):
@@ -655,7 +688,9 @@ if need_commentary:
     elif not audio and not _tts_error and not _streamed:
         st.error("Audio unavailable — no speech was generated.")
 elif st.session_state["commentary_history"]:
-    st.write(st.session_state["commentary_history"][-1])
+    _render_commentary_card(
+        st.session_state["commentary_history"][-1], personality, analysis["trend"]
+    )
     audio = st.session_state["last_audio"]
     if audio:
         _render_audio(audio)
@@ -666,9 +701,9 @@ else:
 
 _history = st.session_state["commentary_history"]
 if len(_history) > 1:
-    with st.expander(f"Commentary history ({len(_history) - 1} previous)"):
+    with st.expander(f"📜 Commentary history ({len(_history) - 1} previous)"):
         for _line in reversed(_history[:-1]):
-            st.caption(_line)
+            st.markdown(f"› {_clean_text(_line)}")
 
 # --- Live mode auto-refresh ---
 if live:
