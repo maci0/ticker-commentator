@@ -12,8 +12,10 @@ from commentator.commentary import (
     _COMMON_RULES,
     _generate_with_llama_cpp,
     _inject_emotion_tags,
+    _numbers_to_speech,
     _system_prompt,
     available_personalities,
+    default_speed_for,
     default_voice_for,
     generate_commentary,
 )
@@ -67,7 +69,7 @@ def test_bearish_uses_negative_tags() -> None:
             {"trend": "bearish", "price_change_pct": -2.0, "volatility": "low"},
         )
     tags = _get_tags(result)
-    assert len(tags) == 2  # both injections fire when random=0.0
+    assert len(tags) == 1  # single-element negative pool -> no duplicate second tag
     assert all(t in ("sigh", "groan") for t in tags)
 
 
@@ -80,7 +82,7 @@ def test_sideways_uses_neutral_tags() -> None:
             {"trend": "sideways", "price_change_pct": 0.3, "volatility": "low"},
         )
     tags = _get_tags(result)
-    assert len(tags) == 2  # both injections fire when random=0.0
+    assert len(tags) == 1  # single-element neutral pool -> no duplicate second tag
     assert all(t in ("chuckle", "sniffle", "yawn") for t in tags)
 
 
@@ -94,7 +96,7 @@ def test_tag_prepended_when_no_punctuation() -> None:
             {"trend": "sideways", "price_change_pct": 0.3, "volatility": "low"},
         )
     tags = _get_tags(result)
-    assert len(tags) == 2  # both injections fire when random=0.0
+    assert len(tags) == 1  # single-element neutral pool -> one prepended tag
     assert result.startswith("<")
 
 
@@ -192,11 +194,11 @@ def test_missing_analysis_keys_uses_defaults() -> None:
         mock_rng.random.return_value = 0.0
         mock_rng.choice.side_effect = lambda pool: pool[0]
         result = _inject_emotion_tags("Some commentary.", {})
-    # Empty dict → trend defaults to "sideways" → neutral tag pool (chuckle/sniffle/yawn)
-    # random.random()=0.0 fires both injection thresholds → 2 neutral tags
+    # Empty dict → trend defaults to "sideways" → single-element neutral pool
+    # (chuckle); the duplicate second tag is suppressed → exactly 1 tag.
     assert "Some commentary" in result
     tags = _get_tags(result)
-    assert len(tags) == 2
+    assert len(tags) == 1
     assert all(t in ("chuckle", "sniffle", "yawn") for t in tags)
 
 
@@ -516,3 +518,72 @@ def test_expected_personalities_present() -> None:
         "surfer", "doomer", "bob_ross", "zen",
     }
     assert set(available_personalities()) == expected
+
+
+# ── number-to-speech ─────────────────────────────────────────────────
+
+
+def test_numbers_to_speech_price_with_cents() -> None:
+    out = _numbers_to_speech("Apple at $312.07 now")
+    assert "three hundred" in out and "twelve" in out and "seven cents" in out
+    assert "$" not in out and "312" not in out
+
+
+def test_numbers_to_speech_whole_dollars() -> None:
+    out = _numbers_to_speech("crossed $50 today")
+    assert "fifty dollars" in out and "$" not in out
+
+
+def test_numbers_to_speech_percent() -> None:
+    out = _numbers_to_speech("up +1.2% on the day")
+    assert "percent" in out and "%" not in out and "1.2" not in out
+
+
+def test_numbers_to_speech_negative_percent() -> None:
+    out = _numbers_to_speech("down -3% hard")
+    assert "negative three percent" in out
+
+
+def test_numbers_to_speech_no_digits_remain() -> None:
+    out = _numbers_to_speech("RSI 68, price $312.07, change +1.2%, range $310.50-$313.11")
+    assert not any(ch.isdigit() for ch in out)
+
+
+def test_numbers_to_speech_leaves_plain_text() -> None:
+    assert _numbers_to_speech("bulls smashing resistance") == "bulls smashing resistance"
+
+
+# ── per-personality speed ────────────────────────────────────────────
+
+
+def test_every_personality_has_valid_default_speed() -> None:
+    for name in available_personalities():
+        s = default_speed_for(name)
+        assert 0.8 <= s <= 1.4
+
+
+def test_default_speed_unknown_persona_in_range() -> None:
+    assert 0.8 <= default_speed_for("nonexistent") <= 1.4
+
+
+# ── no double-same-tag (single-element pool) ─────────────────────────
+
+
+def test_single_tag_pool_never_doubles() -> None:
+    """Bearish pool is [<sigh>] only; even with both rolls passing, no '<sigh> <sigh>'."""
+    with patch("commentator.commentary.random") as mock_rng:
+        mock_rng.random.return_value = 0.0  # both injection rolls pass
+        mock_rng.choice.side_effect = lambda pool: pool[0]
+        result = _inject_emotion_tags(
+            "Bears dragging it down.",
+            {"trend": "bearish", "price_change_pct": -2.0, "volatility": "low"},
+        )
+    assert _count_tags(result) == 1  # second (duplicate) tag suppressed
+
+
+def test_emote_scale_zero_adds_no_tags() -> None:
+    with patch("commentator.commentary.random") as mock_rng:
+        mock_rng.random.return_value = 0.0
+        mock_rng.choice.side_effect = lambda pool: pool[0]
+        result = _inject_emotion_tags("Steady.", {"trend": "bullish"}, scale=0.0)
+    assert _count_tags(result) == 0

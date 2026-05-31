@@ -22,6 +22,7 @@ from commentator import (
     analyze_stock,
     audio_server,
     available_personalities,
+    default_speed_for,
     default_voice_for,
     fetch_stock_data,
     fetch_stock_info,
@@ -68,8 +69,39 @@ _TICKER_SAFE_RE = re.compile(r"[^A-Z0-9.^=\-]")
 
 st.set_page_config(page_title="Stock Commentator", page_icon="📈", layout="wide")
 
+# UI flavor for each commentator personality: (emoji, one-line blurb). Keys must
+# match commentator.commentary personalities; unknown keys fall back gracefully.
+_PERSONA_UI = {
+    "sports": ("🏟️", "Hyped play-by-play"),
+    "neutral": ("📊", "Calm market analyst"),
+    "kramer": ("📣", "Mad Money showman"),
+    "seinfeld": ("🎤", "Observational comedy"),
+    "attenborough": ("🦁", "Nature-doc narrator"),
+    "wsb": ("🚀", "Diamond-hands degenerate"),
+    "noir": ("🕵️", "Hardboiled detective"),
+    "educator": ("🎓", "Explains the indicators"),
+    "gordon_ramsay": ("🔥", "Furious chef"),
+    "pirate": ("🏴‍☠️", "Swashbuckling captain"),
+    "shakespeare": ("🎭", "Dramatic bard"),
+    "surfer": ("🏄", "Chill surfer dude"),
+    "doomer": ("💀", "Permabear doom"),
+    "bob_ross": ("🎨", "Serene painter"),
+    "zen": ("🧘", "Tranquil zen master"),
+}
+
+
+def _persona_emoji(name: str) -> str:
+    return _PERSONA_UI.get(name, ("🎙️", ""))[0]
+
+
+def _persona_label(name: str) -> str:
+    emoji, _ = _PERSONA_UI.get(name, ("🎙️", ""))
+    return f"{emoji} {name.replace('_', ' ').title()}"
+
+
 # --- Sidebar controls ---
 with st.sidebar:
+    st.subheader("📊 Chart")
     ticker = st.text_input("Ticker Symbol", value="AAPL").upper().strip()
     _period_labels = {
         "15m": "Last 15 min",
@@ -96,31 +128,43 @@ with st.sidebar:
     interval = st.selectbox(
         "Interval", intervals, index=intervals.index(default_interval)
     )
+    use_tradingview = st.checkbox("Use TradingView embedded chart", value=False)
 
     st.divider()
+    st.subheader("🎙️ Commentator")
 
     voices = sorted(VALID_VOICES)
     _personalities = available_personalities()
     personality = st.selectbox(
-        "Commentator style",
+        "Style",
         _personalities,
         index=_personalities.index("sports") if "sports" in _personalities else 0,
-        help="Each style has a default voice; pick a voice below to override.",
+        format_func=_persona_label,
     )
+    st.caption(_PERSONA_UI.get(personality, ("", "Custom style"))[1])
     # Voice defaults to the chosen personality's voice. The per-personality key
     # makes the selector reset to that default when the style changes, while a
     # manual override still sticks within the same style.
     _default_voice = default_voice_for(personality)
     voice = st.selectbox(
-        "Commentator voice",
+        "Voice",
         voices,
         index=voices.index(_default_voice) if _default_voice in voices else 0,
         key=f"voice_{personality}",
+        help=f"Default for this style: {_default_voice}",
     )
-    speed = st.slider("Speech speed", 0.8, 1.4, 1.3, step=0.05)
-    use_tradingview = st.checkbox("Use TradingView embedded chart", value=False)
+    # Speed also defaults per style (keyed per personality so it resets on switch).
+    speed = st.slider(
+        "Speech speed",
+        0.8,
+        1.4,
+        default_speed_for(personality),
+        step=0.05,
+        key=f"speed_{personality}",
+    )
 
     st.divider()
+    st.subheader("🔴 Live Mode")
 
     _refresh_max = 5 if period == "15m" else 120
     # For the 15m window the max is 5s, so the min must be below it or the slider
@@ -140,12 +184,16 @@ with st.sidebar:
     )
     live = st.toggle("Live Mode", value=False)
 
-    if st.button("Single update now"):
+    if st.button("▶ Single update now", use_container_width=True):
         st.session_state["force_update"] = True
 
 safe_ticker = _TICKER_SAFE_RE.sub("", ticker)
 
 st.title(f"{ticker} — Stock Commentator")
+st.caption(
+    f"{_persona_label(personality)} · voice: {voice}"
+    + (" · 🔴 LIVE" if live else "")
+)
 
 
 def _render_audio(audio: bytes, *, autoplay: bool = False) -> None:
@@ -447,26 +495,34 @@ with col_chart:
         st.plotly_chart(fig, use_container_width=True)
 
 with col_info:
-    st.subheader("Live Analysis" if live else "Analysis")
+    st.subheader("📡 Live Analysis" if live else "📈 Analysis")
     st.metric(
         "Price",
         f"${analysis['current_price']:.2f}",
         f"{analysis['price_change_pct']:+.2f}%",
     )
-    st.markdown(f"**Trend:** {analysis['trend'].capitalize()}")
-    st.markdown(f"**Range:** \\${analysis['low']:.2f} – \\${analysis['high']:.2f}")
-    st.markdown(f"**Volume:** {analysis['volume_trend'].capitalize()}")
-    st.markdown(f"**Volatility:** {analysis['volatility'].capitalize()}")
+    _trend = analysis["trend"]
+    _trend_icon = {"bullish": "📈", "bearish": "📉"}.get(_trend, "➡️")
+    st.markdown(f"**Trend** &nbsp; {_trend_icon} {_trend.capitalize()}")
+    st.markdown(f"**Range** &nbsp; \\${analysis['low']:.2f} – \\${analysis['high']:.2f}")
+    _vol_icon = {"heavy": "🔊", "light": "🔈"}.get(analysis["volume_trend"], "🔉")
+    st.markdown(f"**Volume** &nbsp; {_vol_icon} {analysis['volume_trend'].capitalize()}")
+    _volat_icon = {"high": "⚡", "medium": "〰️", "low": "😴"}.get(analysis["volatility"], "❔")
+    st.markdown(f"**Volatility** &nbsp; {_volat_icon} {analysis['volatility'].capitalize()}")
     if analysis["rsi"] is not None:
-        rsi_val = analysis["rsi"]
-        rsi_ctx = " — Overbought" if rsi_val > 70 else (" — Oversold" if rsi_val < 30 else "")
-        st.markdown(f"**RSI:** {rsi_val:.1f}{rsi_ctx}")
+        rsi_val = float(analysis["rsi"])
+        rsi_ctx = " · Overbought" if rsi_val > 70 else (" · Oversold" if rsi_val < 30 else "")
+        st.progress(min(max(rsi_val / 100.0, 0.0), 1.0), text=f"RSI {rsi_val:.0f}{rsi_ctx}")
     if analysis["sma_cross"]:
-        st.markdown(f"**Signal:** {analysis['sma_cross'].replace('_', ' ').title()}")
+        if analysis["sma_cross"] == "golden_cross":
+            st.success("⚡ Golden Cross — bullish signal")
+        else:
+            st.error("💀 Death Cross — bearish signal")
 
 # --- Commentary ---
 st.divider()
-st.subheader("Commentary")
+st.subheader("🎙️ Commentary")
+st.caption(f"{_persona_label(personality)} · voice: {voice}")
 
 if need_commentary:
     # Claim this cycle up front so fast failures do not trigger immediate retries.

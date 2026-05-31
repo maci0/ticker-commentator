@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from huggingface_hub import hf_hub_download
+from num2words import num2words
 
 from commentator._config import env_float, env_int, parse_tensor_split
 from commentator.analysis import AnalysisResult
@@ -20,7 +21,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["generate_commentary", "available_personalities"]
+__all__ = [
+    "generate_commentary",
+    "available_personalities",
+    "default_voice_for",
+    "default_speed_for",
+]
 
 
 # Shared, persona-agnostic rules. "No ALL CAPS" is a TTS constraint (Orpheus
@@ -30,6 +36,8 @@ _COMMON_RULES = (
     "- One sentence, 8-16 words max. No quotes, hashtags, or emojis.\n"
     "- Never write words in ALL CAPS. Use exclamation marks and word choice instead.\n"
     "- Weave in the actual numbers (price, percentage) naturally.\n"
+    "- Write prices and percentages as digits ($312.07, +1.2%); never spell"
+    " numbers out in words.\n"
     "- ONLY talk about the stock you are given. Never mention other companies or stocks.\n"
     "- Prefer the company name over the ticker symbol.\n"
     "- If prior commentary is given, don't reuse its phrases."
@@ -116,35 +124,44 @@ _PERSONAS: dict[str, str] = {
     ),
 }
 _DEFAULT_PERSONALITY = os.getenv("COMMENTARY_PERSONALITY", "sports").strip().lower()
-# Personalities that should NOT get probabilistic emotion tags (a calm analyst or
-# teacher laughing/sighing would be incongruous).
-_NO_EMOTE_PERSONALITIES = frozenset({"neutral", "educator", "zen"})
 
-# Default Orpheus voice per personality (overridable in the UI). Voices must be
-# in commentator.tts.VALID_VOICES; _FALLBACK_VOICE is used for unknown personas.
-_FALLBACK_VOICE = "leo"
-_PERSONA_VOICES: dict[str, str] = {
-    "sports": "leo",
-    "neutral": "dan",
-    "kramer": "zac",
-    "seinfeld": "leo",
-    "attenborough": "dan",
-    "wsb": "zac",
-    "noir": "dan",
-    "educator": "tara",
-    "gordon_ramsay": "zac",
-    "pirate": "zac",
-    "shakespeare": "leo",
-    "surfer": "leo",
-    "doomer": "dan",
-    "bob_ross": "dan",
-    "zen": "leah",
+# Per-personality delivery profile: default Orpheus voice, speech speed (clamped
+# to the TTS [0.8, 1.4] range), and emote scale (multiplier on the base emotion-
+# tag probabilities; 0.0 = no tags). Voices must be in commentator.tts.VALID_VOICES.
+# Tuned per persona: energetic/comedic voices are faster with more emotes; calm,
+# factual, or brooding voices are slower with fewer or no tags.
+_FALLBACK_PROFILE = {"voice": "leo", "speed": 1.2, "emote": 1.0}
+_PERSONA_PROFILE: dict[str, dict] = {
+    "sports": {"voice": "leo", "speed": 1.3, "emote": 1.0},
+    "neutral": {"voice": "dan", "speed": 1.0, "emote": 0.0},
+    "kramer": {"voice": "zac", "speed": 1.4, "emote": 1.5},
+    "seinfeld": {"voice": "leo", "speed": 1.1, "emote": 1.0},
+    "attenborough": {"voice": "dan", "speed": 0.9, "emote": 0.5},
+    "wsb": {"voice": "zac", "speed": 1.35, "emote": 1.5},
+    "noir": {"voice": "dan", "speed": 0.95, "emote": 0.5},
+    "educator": {"voice": "tara", "speed": 1.0, "emote": 0.0},
+    "gordon_ramsay": {"voice": "zac", "speed": 1.3, "emote": 1.5},
+    "pirate": {"voice": "zac", "speed": 1.1, "emote": 1.0},
+    "shakespeare": {"voice": "leo", "speed": 1.0, "emote": 0.5},
+    "surfer": {"voice": "leo", "speed": 1.0, "emote": 1.0},
+    "doomer": {"voice": "dan", "speed": 0.9, "emote": 0.5},
+    "bob_ross": {"voice": "dan", "speed": 0.85, "emote": 0.5},
+    "zen": {"voice": "leah", "speed": 0.8, "emote": 0.0},
 }
 
 
+def _profile(personality: str) -> dict:
+    return _PERSONA_PROFILE.get((personality or "").strip().lower(), _FALLBACK_PROFILE)
+
+
 def default_voice_for(personality: str) -> str:
-    """The default Orpheus voice for a personality (falls back to _FALLBACK_VOICE)."""
-    return _PERSONA_VOICES.get((personality or "").strip().lower(), _FALLBACK_VOICE)
+    """The default Orpheus voice for a personality."""
+    return _profile(personality)["voice"]
+
+
+def default_speed_for(personality: str) -> float:
+    """The default speech speed for a personality (clamped to [0.8, 1.4])."""
+    return max(0.8, min(1.4, float(_profile(personality)["speed"])))
 
 
 def _system_prompt(personality: str) -> str:
@@ -200,6 +217,50 @@ _EMOTION_TAG_RE = re.compile(r"<(laugh|chuckle|sigh|cough|sniffle|groan|yawn|gas
 # Matches punctuation pauses but not decimal points or thousands separators
 # (e.g. "105.0" or "1,000").
 _PAUSE_RE = re.compile(r"(?<!\d)[,;!?…—]|\.(?!\d)")
+
+# Number→speech: TTS mangles digit strings ($312.07 spoken as "31.07"), so
+# convert prices/percents/bare numbers to plain words before synthesis.
+# The comma-grouped branch requires a comma (+) so a plain run like 1000 falls to
+# the \d+ branch and is matched whole, not truncated to its first three digits.
+_MONEY_RE = re.compile(r"\$(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?")
+_PERCENT_RE = re.compile(r"([+-]?)(\d+(?:\.\d+)?)\s*%")
+_BARE_NUM_RE = re.compile(r"(?<![\w$])([+-]?\d+(?:\.\d+)?)(?![\w%])")
+
+
+def _spoken_money(m: "re.Match[str]") -> str:
+    dollars = int(m.group(1).replace(",", ""))
+    cents_s = m.group(2)
+    words = f"{num2words(dollars)} {'dollar' if dollars == 1 else 'dollars'}"
+    if cents_s:
+        cents = int(cents_s.ljust(2, "0")[:2])
+        if cents:
+            words += f" and {num2words(cents)} {'cent' if cents == 1 else 'cents'}"
+    return words
+
+
+def _spoken_percent(m: "re.Match[str]") -> str:
+    sign, num = m.group(1), m.group(2)
+    value = float(num) if "." in num else int(num)
+    prefix = "negative " if sign == "-" else ""
+    return f"{prefix}{num2words(value)} percent"
+
+
+def _spoken_number(m: "re.Match[str]") -> str:
+    num = m.group(1)
+    value = float(num) if "." in num else int(num.lstrip("+"))
+    return num2words(value)
+
+
+def _numbers_to_speech(text: str) -> str:
+    """Replace prices, percentages, and bare numbers with spoken words so the TTS
+    model pronounces them correctly. Falls back to the original text on error."""
+    try:
+        text = _MONEY_RE.sub(_spoken_money, text)
+        text = _PERCENT_RE.sub(_spoken_percent, text)
+        text = _BARE_NUM_RE.sub(_spoken_number, text)
+    except (ValueError, OverflowError):
+        logger.warning("number-to-speech conversion failed; leaving text as-is")
+    return text
 
 
 def _get_commentary_llm() -> "Llama":
@@ -312,7 +373,7 @@ _NEGATIVE_TAGS_SURPRISED = _NEGATIVE_TAGS + _SURPRISE_TAGS
 _NEUTRAL_TAGS_SURPRISED = _NEUTRAL_TAGS + _SURPRISE_TAGS
 
 
-def _inject_emotion_tags(text: str, analysis: dict[str, Any]) -> str:
+def _inject_emotion_tags(text: str, analysis: dict[str, Any], scale: float = 1.0) -> str:
     """Insert 0-2 Orpheus emotion tags based on market sentiment.
 
     The tag pool is determined by sentiment category (bullish → positive,
@@ -321,7 +382,7 @@ def _inject_emotion_tags(text: str, analysis: dict[str, Any]) -> str:
     randomly from that pool, then placed probabilistically — first after the
     earliest punctuation pause (or prepended if none exists), second appended to
     the end. Tags are kept infrequent (see _EMOTE_CHANCE_*) because they reduce
-    speech clarity.
+    speech clarity; `scale` multiplies the per-personality probability (0 = off).
     """
     # Strip any tags the LLM may have hallucinated; fast-path avoids regex
     # overhead (which includes scanning the full string) when no tags present.
@@ -345,9 +406,15 @@ def _inject_emotion_tags(text: str, analysis: dict[str, Any]) -> str:
 
     # Cosmetic randomness — controls voice inflection variety, not security-sensitive.
     tag1 = random.choice(pool)
-    tag2 = random.choice([t for t in pool if t != tag1] or pool)
+    # Distinct second tag; None when the pool has no alternative (avoids the
+    # "<chuckle> <chuckle>" double-same-tag artifact).
+    alternatives = [t for t in pool if t != tag1]
+    tag2 = random.choice(alternatives) if alternatives else None
 
-    if random.random() < _EMOTE_CHANCE_1:
+    chance1 = min(1.0, _EMOTE_CHANCE_1 * scale)
+    chance2 = min(1.0, _EMOTE_CHANCE_2 * scale)
+
+    if random.random() < chance1:
         pause = _PAUSE_RE.search(text)
         if pause:
             pos = pause.end()
@@ -355,8 +422,8 @@ def _inject_emotion_tags(text: str, analysis: dict[str, Any]) -> str:
         else:
             text = f"{tag1} {text}"
 
-    # Only add second tag some of the time to feel natural.
-    if random.random() < _EMOTE_CHANCE_2:
+    # Only add a distinct second tag some of the time to feel natural.
+    if tag2 is not None and random.random() < chance2:
         text = text.rstrip(".!") + f" {tag2}"
 
     return text
@@ -452,13 +519,17 @@ def generate_commentary(
         logger.warning("generate_commentary: unknown personality %r; using 'sports'", persona)
         persona = "sports"
 
+    emote_scale = float(_profile(persona)["emote"])
     try:
         text = _generate_with_llama_cpp(user_prompt, _system_prompt(persona))
-        # The neutral analyst voice gets no emotion tags.
-        if persona in _NO_EMOTE_PERSONALITIES:
+        # Convert prices/percentages to spoken words so the TTS model pronounces
+        # them correctly (it otherwise garbles digit strings).
+        text = _numbers_to_speech(text)
+        if emote_scale <= 0:
+            # No-emote personas (neutral/educator/zen): strip any stray tags.
             result = _EMOTION_TAG_RE.sub("", text).strip() if "<" in text else text
         else:
-            result = _inject_emotion_tags(text, analysis)
+            result = _inject_emotion_tags(text, analysis, scale=emote_scale)
         logger.debug("commentary_result persona=%s text=%r", persona, result)
         return result
     except Exception:

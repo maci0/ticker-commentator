@@ -21,7 +21,9 @@ from commentator.commentary import (
     _COMMON_RULES,
     _EMOTION_TAG_RE,
     _inject_emotion_tags,
+    _numbers_to_speech,
     _system_prompt,
+    default_speed_for,
     default_voice_for,
 )
 from commentator.data import _TICKER_RE, _validate_ticker
@@ -209,6 +211,28 @@ def test_system_prompt_always_valid(personality: str) -> None:
 def test_default_voice_always_valid(personality: str) -> None:
     """Any personality string maps to a real Orpheus voice."""
     assert default_voice_for(personality) in VALID_VOICES
+
+
+@given(personality=st.text(max_size=40))
+def test_default_speed_always_in_range(personality: str) -> None:
+    assert 0.8 <= default_speed_for(personality) <= 1.4
+
+
+@given(text=st.text(max_size=200))
+def test_numbers_to_speech_never_crashes(text: str) -> None:
+    out = _numbers_to_speech(text)
+    assert isinstance(out, str)
+
+
+@given(
+    dollars=st.integers(min_value=0, max_value=999999),
+    cents=st.integers(min_value=0, max_value=99),
+)
+def test_numbers_to_speech_strips_price_digits(dollars: int, cents: int) -> None:
+    """A formatted price is fully converted to words (no digits, no '$' left)."""
+    out = _numbers_to_speech(f"price ${dollars}.{cents:02d} now")
+    assert "$" not in out
+    assert not any(ch.isdigit() for ch in out)
 
 
 # ── analysis.analyze_stock (OHLCV math, NaN/edge guards) ─────────────

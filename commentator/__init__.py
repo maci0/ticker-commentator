@@ -26,6 +26,7 @@ if _gpu_device != "" and "CUDA_VISIBLE_DEVICES" not in os.environ:
 from commentator.analysis import AnalysisError, AnalysisResult, analyze_stock  # noqa: E402
 from commentator.commentary import (  # noqa: E402
     available_personalities,
+    default_speed_for,
     default_voice_for,
     generate_commentary,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "generate_commentary",
     "available_personalities",
     "default_voice_for",
+    "default_speed_for",
     # data
     "fetch_stock_data",
     "fetch_stock_info",
