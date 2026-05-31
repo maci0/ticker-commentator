@@ -20,28 +20,64 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["generate_commentary"]
+__all__ = ["generate_commentary", "available_personalities"]
 
 
-_SYSTEM_PROMPT = (
-    "You are an over-the-top sports commentator calling LIVE stock market action"
-    " — John Madden meets WWE.\n"
-    "\n"
+# Shared, persona-agnostic rules. "No ALL CAPS" is a TTS constraint (Orpheus
+# mis-pronounces capitalized words), not a style choice — keep it for every voice.
+_COMMON_RULES = (
     "Rules:\n"
     "- One sentence, 8-16 words max. No quotes, hashtags, or emojis.\n"
-    "- Use sports metaphors, puns, and dramatic reactions mixed with real trading"
-    " lingo — support, resistance, breakout, pullback, consolidation, squeeze,"
-    " rally, selloff.\n"
-    '- Frame buyers and sellers as rival teams battling it out — "bulls smashing'
-    ' through resistance", "bears defending support", etc.\n'
-    "- Natural spoken style — contractions, exclamations, ellipses.\n"
     "- Never write words in ALL CAPS. Use exclamation marks and word choice instead.\n"
     "- Weave in the actual numbers (price, percentage) naturally.\n"
     "- ONLY talk about the stock you are given. Never mention other companies or stocks.\n"
     "- Prefer the company name over the ticker symbol.\n"
-    "- If prior commentary is given, don't reuse its phrases.\n"
-    '- Never say "folks" or "ladies and gentlemen".'
+    "- If prior commentary is given, don't reuse its phrases."
 )
+
+# Per-personality persona blocks, prepended to _COMMON_RULES.
+_PERSONAS: dict[str, str] = {
+    "sports": (
+        "You are an over-the-top sports commentator calling LIVE stock market"
+        " action — John Madden meets WWE. Use sports metaphors, puns, and dramatic"
+        " reactions mixed with real trading lingo (support, resistance, breakout,"
+        " pullback, squeeze, rally, selloff). Frame buyers and sellers as rival"
+        " teams battling it out — bulls smashing resistance, bears defending"
+        ' support. Natural spoken style with contractions and exclamations. Never'
+        ' say "folks" or "ladies and gentlemen".'
+    ),
+    "neutral": (
+        "You are a calm, professional market analyst. Report the move factually"
+        " and concisely in plain spoken English — no hype, no metaphors, no jokes,"
+        " no sound effects. Just the clear takeaway a serious trader would want."
+    ),
+    "kramer": (
+        "You are a hyper-energetic financial-TV showman in the style of a Mad Money"
+        " host. Rapid-fire, punchy, full of conviction — playful buy/sell energy,"
+        " catchphrase enthusiasm, and theatrical excitement, in a spoken style with"
+        " exclamations."
+    ),
+    "seinfeld": (
+        "You are an observational stand-up comedian riffing on the stock like Jerry"
+        ' Seinfeld. Dry, witty, "what is the deal with..." everyday-analogy humor'
+        " and comedic timing, in a natural spoken style."
+    ),
+}
+_DEFAULT_PERSONALITY = os.getenv("COMMENTARY_PERSONALITY", "sports").strip().lower()
+# Personalities that should NOT get probabilistic emotion tags (a calm analyst
+# laughing/sighing would be incongruous).
+_NO_EMOTE_PERSONALITIES = frozenset({"neutral"})
+
+
+def _system_prompt(personality: str) -> str:
+    """Compose the system prompt for a personality (falls back to 'sports')."""
+    persona = _PERSONAS.get(personality, _PERSONAS["sports"])
+    return f"{persona}\n\n{_COMMON_RULES}"
+
+
+def available_personalities() -> list[str]:
+    """Sorted list of selectable commentator personalities."""
+    return sorted(_PERSONAS)
 
 _COMMENTARY_GGUF_REPO = os.getenv(
     "COMMENTARY_GGUF_REPO", "unsloth/Qwen3.5-4B-GGUF"
@@ -149,7 +185,7 @@ def _get_commentary_llm() -> "Llama":
     return _COMMENTARY_LLM
 
 
-def _generate_with_llama_cpp(user_prompt: str) -> str:
+def _generate_with_llama_cpp(user_prompt: str, system_prompt: str) -> str:
     """Run a single chat completion and return the stripped text.
 
     Appends /no_think to the user message to suppress chain-of-thought in
@@ -165,7 +201,7 @@ def _generate_with_llama_cpp(user_prompt: str) -> str:
         with LLAMA_CPP_LOCK:
             response: Any = llm.create_chat_completion(
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"{user_prompt}\n/no_think"},
                 ],
                 temperature=_COMMENTARY_TEMPERATURE,
@@ -257,8 +293,13 @@ def generate_commentary(
     live_move: float | None = None,
     live_move_pct: float | None = None,
     live_direction: str | None = None,
+    personality: str | None = None,
 ) -> str:
-    """Generate sports-style stock commentary from analysis data.
+    """Generate stock commentary from analysis data in the chosen personality.
+
+    personality selects the commentator voice (see available_personalities());
+    unknown/None falls back to COMMENTARY_PERSONALITY (default 'sports'). The
+    'neutral' analyst voice gets no emotion tags.
 
     Never raises — returns a safe fallback string on any LLM failure.
     Internal errors are logged but never exposed to the caller.
@@ -328,10 +369,19 @@ def generate_commentary(
             f" ignore any stock names in them):\n{numbered}"
         )
 
+    persona = (personality or _DEFAULT_PERSONALITY).strip().lower()
+    if persona not in _PERSONAS:
+        logger.warning("generate_commentary: unknown personality %r; using 'sports'", persona)
+        persona = "sports"
+
     try:
-        text = _generate_with_llama_cpp(user_prompt)
-        result = _inject_emotion_tags(text, analysis)
-        logger.debug("commentary_result text=%r", result)
+        text = _generate_with_llama_cpp(user_prompt, _system_prompt(persona))
+        # The neutral analyst voice gets no emotion tags.
+        if persona in _NO_EMOTE_PERSONALITIES:
+            result = _EMOTION_TAG_RE.sub("", text).strip() if "<" in text else text
+        else:
+            result = _inject_emotion_tags(text, analysis)
+        logger.debug("commentary_result persona=%s text=%r", persona, result)
         return result
     except Exception:
         logger.exception("Commentary generation failed")

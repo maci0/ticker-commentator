@@ -21,6 +21,7 @@ from commentator import (
     VALID_VOICES,
     analyze_stock,
     audio_server,
+    available_personalities,
     fetch_stock_data,
     fetch_stock_info,
     generate_commentary,
@@ -103,6 +104,13 @@ with st.sidebar:
         voices,
         index=voices.index("leo"),
     )
+    _personalities = available_personalities()
+    personality = st.selectbox(
+        "Commentator style",
+        _personalities,
+        index=_personalities.index("sports") if "sports" in _personalities else 0,
+        help="sports = hyped play-by-play · neutral = calm analyst · kramer/seinfeld = comedic",
+    )
     speed = st.slider("Speech speed", 0.8, 1.4, 1.3, step=0.05)
     use_tradingview = st.checkbox("Use TradingView embedded chart", value=False)
 
@@ -179,12 +187,12 @@ def _audio_bundle(commentary: str, voice: str, speed: float) -> tuple[bytes | No
 
 
 def _prefetch_key(
-    ticker: str, period: str, interval: str, voice: str, speed: float
+    ticker: str, period: str, interval: str, voice: str, speed: float, personality: str
 ) -> tuple:
     """Identity of a settings snapshot for the speculative no-move line. Price is
     intentionally excluded: the prefetched line is the unchanged-market commentary,
     reused when the next tick's move is below LIVE_PREFETCH_TOLERANCE_PCT."""
-    return (ticker, period, interval, voice, round(speed, 2))
+    return (ticker, period, interval, voice, round(speed, 2), personality)
 
 
 # --- Session state init ---
@@ -483,7 +491,7 @@ if need_commentary:
         and live_move_pct is not None
         and abs(live_move_pct) >= _LIVE_PREFETCH_TOL
     )
-    _pf_key = _prefetch_key(ticker, period, interval, voice, speed)
+    _pf_key = _prefetch_key(ticker, period, interval, voice, speed, personality)
     _pf = (
         prefetch.take(_pf_key)
         if (_LIVE_PREFETCH and live and not _significant_move)
@@ -508,6 +516,7 @@ if need_commentary:
                     live_move=live_move,
                     live_move_pct=live_move_pct,
                     live_direction=live_direction,
+                    personality=personality,
                 )
         except Exception as exc:
             logger.exception("Commentary generation failed ticker=%s", ticker)
@@ -618,12 +627,14 @@ if live:
     # worker is a daemon thread calling only pure commentator functions (no
     # Streamlit/session_state access), so it is safe off the main thread.
     if _LIVE_PREFETCH and remaining > 0:
-        _next_key = _prefetch_key(ticker, period, interval, voice, speed)
+        _next_key = _prefetch_key(ticker, period, interval, voice, speed, personality)
         _hist = list(st.session_state["commentary_history"])
-        _analysis, _name = analysis, company_name
+        _analysis, _name, _persona = analysis, company_name, personality
 
         def _prefetch_worker() -> tuple[str, bytes | None, float | None]:
-            text = generate_commentary(_analysis, ticker, _name, previous_commentary=_hist)
+            text = generate_commentary(
+                _analysis, ticker, _name, previous_commentary=_hist, personality=_persona
+            )
             wav, dur = _audio_bundle(text, voice, speed)
             return text, wav, dur
 

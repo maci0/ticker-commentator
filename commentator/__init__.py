@@ -24,7 +24,10 @@ if _gpu_device != "" and "CUDA_VISIBLE_DEVICES" not in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = _gpu_device
 
 from commentator.analysis import AnalysisError, AnalysisResult, analyze_stock  # noqa: E402
-from commentator.commentary import generate_commentary  # noqa: E402
+from commentator.commentary import (  # noqa: E402
+    available_personalities,
+    generate_commentary,
+)
 from commentator.data import StockInfo, fetch_stock_data, fetch_stock_info  # noqa: E402
 from commentator.tts import (  # noqa: E402
     SAMPLE_RATE,
@@ -41,6 +44,7 @@ __all__ = [
     "AnalysisError",
     # commentary
     "generate_commentary",
+    "available_personalities",
     # data
     "fetch_stock_data",
     "fetch_stock_info",

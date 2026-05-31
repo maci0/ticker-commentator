@@ -9,8 +9,11 @@ from unittest.mock import patch
 
 from commentator.analysis import AnalysisResult
 from commentator.commentary import (
+    _COMMON_RULES,
     _generate_with_llama_cpp,
     _inject_emotion_tags,
+    _system_prompt,
+    available_personalities,
     generate_commentary,
 )
 
@@ -389,7 +392,7 @@ def test_llm_postprocess_strips_think_block() -> None:
         mock_get.return_value.create_chat_completion.return_value = _llm_response(
             "<think>Some reasoning.</think> Apple is surging!"
         )
-        result = _generate_with_llama_cpp("prompt")
+        result = _generate_with_llama_cpp("prompt", "system")
     assert "<think>" not in result
     assert "Some reasoning." not in result
     assert "Apple is surging!" in result
@@ -401,7 +404,7 @@ def test_llm_postprocess_strips_multiline_think_block() -> None:
         mock_get.return_value.create_chat_completion.return_value = _llm_response(
             "<think>\nLine 1\nLine 2\n</think>Market holds steady."
         )
-        result = _generate_with_llama_cpp("prompt")
+        result = _generate_with_llama_cpp("prompt", "system")
     assert "<think>" not in result
     assert "Line 1" not in result
     assert "Market holds steady." in result
@@ -413,7 +416,7 @@ def test_llm_postprocess_strips_folks() -> None:
         mock_get.return_value.create_chat_completion.return_value = _llm_response(
             "Folks, Apple is rallying hard today!"
         )
-        result = _generate_with_llama_cpp("prompt")
+        result = _generate_with_llama_cpp("prompt", "system")
     assert "Folks" not in result
     assert "Apple is rallying hard today!" in result
 
@@ -424,7 +427,7 @@ def test_llm_postprocess_strips_ladies_and_gentlemen() -> None:
         mock_get.return_value.create_chat_completion.return_value = _llm_response(
             "Ladies and gentlemen, the bulls are charging!"
         )
-        result = _generate_with_llama_cpp("prompt")
+        result = _generate_with_llama_cpp("prompt", "system")
     assert "Ladies and gentlemen" not in result
     assert "bulls are charging!" in result
 
@@ -449,3 +452,46 @@ def test_decimal_price_not_treated_as_pause() -> None:
         "tag should be prepended when text has no valid punctuation pause"
     )
     assert "150.50" in result, "price must be preserved intact"
+
+
+# ── personalities ────────────────────────────────────────────────────
+
+
+def test_available_personalities_includes_all_four() -> None:
+    p = available_personalities()
+    assert set(p) >= {"sports", "neutral", "kramer", "seinfeld"}
+    assert p == sorted(p)
+
+
+def test_system_prompt_includes_common_rules_for_each() -> None:
+    for name in available_personalities():
+        assert _COMMON_RULES in _system_prompt(name)
+
+
+def test_system_prompt_distinct_per_personality() -> None:
+    prompts = {p: _system_prompt(p) for p in ("sports", "neutral", "kramer", "seinfeld")}
+    assert len(set(prompts.values())) == 4  # all distinct personas
+
+
+def test_system_prompt_unknown_falls_back_to_sports() -> None:
+    assert _system_prompt("nonexistent") == _system_prompt("sports")
+
+
+def test_neutral_personality_strips_emotion_tags() -> None:
+    """The neutral analyst voice must not carry Orpheus emotion tags."""
+    with patch(
+        "commentator.commentary._generate_with_llama_cpp",
+        return_value="Apple is up one percent. <laugh> Volume is heavy. <sigh>",
+    ):
+        result = generate_commentary(_make_analysis(), "AAPL", "Apple", personality="neutral")
+    assert "<" not in result and ">" not in result
+
+
+def test_personality_selects_its_system_prompt() -> None:
+    """generate_commentary passes the chosen personality's system prompt to the LLM."""
+    with patch(
+        "commentator.commentary._generate_with_llama_cpp", return_value="Booyah."
+    ) as mock_llm:
+        generate_commentary(_make_analysis(), "AAPL", "Apple", personality="kramer")
+    system_prompt_used = mock_llm.call_args[0][1]  # 2nd positional arg
+    assert system_prompt_used == _system_prompt("kramer")

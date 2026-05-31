@@ -17,7 +17,12 @@ from hypothesis import strategies as st
 from commentator import audio_server, tts_engines
 from commentator._config import env_float, env_int, parse_tensor_split
 from commentator.analysis import analyze_stock
-from commentator.commentary import _EMOTION_TAG_RE, _inject_emotion_tags
+from commentator.commentary import (
+    _COMMON_RULES,
+    _EMOTION_TAG_RE,
+    _inject_emotion_tags,
+    _system_prompt,
+)
 from commentator.data import _TICKER_RE, _validate_ticker
 from commentator.tts import (
     _iter_custom_tokens_from_text_stream,
@@ -185,6 +190,17 @@ def test_inject_emotion_tags_never_crashes_and_only_known_tags(
     # restricted us to (arbitrary <...> in the fuzzed input is not our concern).
     for tag in _EMOTION_TAG_RE.findall(out):
         assert f"<{tag}>" in {"<laugh>", "<chuckle>", "<sigh>"}
+
+
+# ── commentary._system_prompt (personality selection) ───────────────
+
+
+@given(personality=st.text(max_size=40))
+def test_system_prompt_always_valid(personality: str) -> None:
+    """Any personality string yields a non-empty prompt containing the shared
+    rules (unknown ones fall back to a valid persona)."""
+    out = _system_prompt(personality)
+    assert isinstance(out, str) and _COMMON_RULES in out
 
 
 # ── analysis.analyze_stock (OHLCV math, NaN/edge guards) ─────────────
