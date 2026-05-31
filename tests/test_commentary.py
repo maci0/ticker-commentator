@@ -575,3 +575,9 @@ def test_emote_scale_zero_adds_no_tags() -> None:
         mock_rng.choice.side_effect = lambda pool: pool[0]
         result = _inject_emotion_tags("Steady.", {"trend": "bullish"}, scale=0.0)
     assert _count_tags(result) == 0
+
+
+def test_system_prompt_includes_persona_example() -> None:
+    from commentator.commentary import _PERSONA_EXAMPLES
+    for name, example in _PERSONA_EXAMPLES.items():
+        assert example in _system_prompt(name)

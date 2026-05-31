@@ -39,7 +39,10 @@ _COMMON_RULES = (
     " numbers out in words.\n"
     "- ONLY talk about the stock you are given. Never mention other companies or stocks.\n"
     "- Prefer the company name over the ticker symbol.\n"
-    "- If prior commentary is given, don't reuse its phrases."
+    "- Anchor on the specific move, signal, or level you're given — be concrete,"
+    " not generic.\n"
+    "- If prior commentary is given, open with a fresh angle and don't reuse its"
+    " phrasing."
 )
 
 # Per-personality persona blocks, prepended to _COMMON_RULES.
@@ -163,10 +166,51 @@ def default_speed_for(personality: str) -> float:
     return max(0.8, min(1.4, float(_profile(personality)["speed"])))
 
 
+# One exemplar line per persona — few-shot anchoring lifts small-model output
+# quality far more than rules alone: it pins the voice, the one-sentence length,
+# and the digit-number style. Each uses $312.07 / 1.2% to model the number form.
+_PERSONA_EXAMPLES: dict[str, str] = {
+    "sports":
+        "Bulls storm the gates as Apple rips through resistance to $312.07 on heavy volume!",
+    "neutral":
+        "Apple is up 1.2% to $312.07 on above-average volume, holding above its averages.",
+    "kramer":
+        "Apple's on fire at $312.07 — that's a buy buy buy as the bulls take the floor!",
+    "seinfeld":
+        "What's the deal with Apple at $312.07? Up 1.2% like it's doing us a favor.",
+    "attenborough":
+        "Here we observe Apple gliding to $312.07 as the herd of bulls grazes on volume.",
+    "wsb":
+        "Apple ripping to $312.07, diamond hands only, this rocket isn't stopping!",
+    "noir":
+        "Apple slunk in at $312.07, down 1.2% — the kind of number that means trouble.",
+    "educator":
+        "Apple's RSI near 68 means it's nearing overbought while price holds $312.07.",
+    "gordon_ramsay":
+        "This Apple chart at $312.07 is a disaster — the bulls have overcooked it!",
+    "pirate":
+        "Arr, Apple be sailin' to $312.07 with the wind at her back and a full hold!",
+    "shakespeare":
+        "Lo, Apple doth ascend to $312.07, as bulls and bears wage eternal war below.",
+    "surfer":
+        "Whoa, Apple's totally pumping to $312.07, riding a gnarly wave of volume, dude.",
+    "doomer":
+        "Apple's fragile climb to $312.07 is just the calm before the inevitable collapse.",
+    "bob_ross":
+        "Apple drifts up to a happy little $312.07 — no mistakes here, just gentle gains.",
+    "zen":
+        "Apple rests at $312.07; the market rises and falls, and we simply observe.",
+}
+
+
 def _system_prompt(personality: str) -> str:
     """Compose the system prompt for a personality (falls back to 'sports')."""
-    persona = _PERSONAS.get(personality, _PERSONAS["sports"])
-    return f"{persona}\n\n{_COMMON_RULES}"
+    key = personality if personality in _PERSONAS else "sports"
+    prompt = f"{_PERSONAS[key]}\n\n{_COMMON_RULES}"
+    example = _PERSONA_EXAMPLES.get(key)
+    if example:
+        prompt += f'\n\nExample (match this voice, length, and number style): "{example}"'
+    return prompt
 
 
 def available_personalities() -> list[str]:
