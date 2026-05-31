@@ -36,6 +36,8 @@ def _float_to_pcm16(audio: object) -> bytes:
     if hasattr(audio, "detach"):  # torch tensor
         audio = audio.detach().cpu().numpy()
     arr = np.asarray(audio, dtype=np.float32).ravel()
+    # nan_to_num before clip: clip leaves NaN as NaN, which casts to garbage int16.
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=-1.0)
     return (np.clip(arr, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
 
