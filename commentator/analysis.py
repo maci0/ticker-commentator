@@ -21,8 +21,9 @@ _ATR_MEDIUM_PCT = 0.8        # ATR/price % above which volatility is "medium"
 
 
 def _safe_round(value: float, ndigits: int) -> float:
-    """Round value, substituting 0.0 for NaN to prevent silent NaN propagation in results."""
-    return round(value if not math.isnan(value) else 0.0, ndigits)
+    """Round value, substituting 0.0 for any non-finite input (NaN or ±inf) to
+    prevent silent garbage propagating into results."""
+    return round(value if math.isfinite(value) else 0.0, ndigits)
 
 
 class AnalysisError(TypedDict):
@@ -99,6 +100,11 @@ def analyze_stock(df: pd.DataFrame) -> AnalysisResult | AnalysisError:
     else:
         price_change = current_price - first_close
         price_change_pct = (price_change / first_close) * 100
+        # A denormal/near-zero first_close (e.g. 5e-324) slips past the `== 0`
+        # guard above and makes the ratio non-finite; treat that as no change.
+        if not math.isfinite(price_change_pct):
+            price_change = 0.0
+            price_change_pct = 0.0
 
     if price_change_pct > _TREND_THRESHOLD_PCT:
         trend = "bullish"

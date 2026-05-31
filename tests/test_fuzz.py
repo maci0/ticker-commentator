@@ -6,14 +6,17 @@ unit tests. These focus on never-crash + invariant guarantees under arbitrary
 HTTP Range headers.
 """
 
+import math
 import os
 
 import numpy as np
+import pandas as pd
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from commentator import audio_server, tts_engines
 from commentator._config import env_float, env_int, parse_tensor_split
+from commentator.analysis import analyze_stock
 from commentator.commentary import _EMOTION_TAG_RE, _inject_emotion_tags
 from commentator.data import _TICKER_RE, _validate_ticker
 from commentator.tts import (
@@ -182,6 +185,45 @@ def test_inject_emotion_tags_never_crashes_and_only_known_tags(
     # restricted us to (arbitrary <...> in the fuzzed input is not our concern).
     for tag in _EMOTION_TAG_RE.findall(out):
         assert f"<{tag}>" in {"<laugh>", "<chuckle>", "<sigh>"}
+
+
+# ── analysis.analyze_stock (OHLCV math, NaN/edge guards) ─────────────
+
+# Bounded prices/volumes plus explicit NaN (which analyze_stock must guard).
+_price = st.one_of(
+    st.floats(min_value=0, max_value=1e6, allow_nan=False, allow_infinity=False),
+    st.just(float("nan")),
+)
+_vol = st.one_of(
+    st.floats(min_value=0, max_value=1e9, allow_nan=False, allow_infinity=False),
+    st.just(float("nan")),
+)
+_ohlcv_rows = st.lists(st.tuples(_price, _price, _price, _price, _vol), max_size=60)
+
+_TRENDS = {"bullish", "bearish", "sideways"}
+_VOLS = {"high", "medium", "low", "unknown"}
+_VOLT = {"heavy", "light", "normal"}
+_CROSS = {"golden_cross", "death_cross", None}
+
+
+@settings(max_examples=250)
+@given(rows=_ohlcv_rows)
+def test_analyze_stock_never_crashes_finite_output(rows: list) -> None:
+    df = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"])
+    if len(df):
+        df.index = pd.date_range("2024-01-01", periods=len(df), freq="min")
+    res = analyze_stock(df)
+    assert isinstance(res, dict)
+    if "error" in res:
+        return
+    # Numeric fields must be finite — the NaN guards must hold for any input.
+    for k in ("price_change_pct", "current_price", "open_price", "high", "low"):
+        assert math.isfinite(res[k]), (k, res[k])
+    assert res["trend"] in _TRENDS
+    assert res["volatility"] in _VOLS
+    assert res["volume_trend"] in _VOLT
+    assert res["sma_cross"] in _CROSS
+    assert res["rsi"] is None or (0.0 <= res["rsi"] <= 100.0)
 
 
 # ── _config helpers ──────────────────────────────────────────────────
