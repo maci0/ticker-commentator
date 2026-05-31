@@ -10,9 +10,9 @@ from unittest.mock import patch
 from commentator.analysis import AnalysisResult
 from commentator.commentary import (
     _COMMON_RULES,
+    _first_sentence,
     _generate_with_llama_cpp,
     _inject_emotion_tags,
-    _numbers_to_speech,
     _system_prompt,
     available_personalities,
     default_speed_for,
@@ -520,37 +520,25 @@ def test_expected_personalities_present() -> None:
     assert set(available_personalities()) == expected
 
 
-# ── number-to-speech ─────────────────────────────────────────────────
+# ── first-sentence brevity ───────────────────────────────────────────
 
 
-def test_numbers_to_speech_price_with_cents() -> None:
-    out = _numbers_to_speech("Apple at $312.07 now")
-    assert "three hundred" in out and "twelve" in out and "seven cents" in out
-    assert "$" not in out and "312" not in out
+def test_first_sentence_truncates_runon() -> None:
+    out = _first_sentence("Bulls charge ahead! Then everything collapsed. And more.")
+    assert out == "Bulls charge ahead!"
 
 
-def test_numbers_to_speech_whole_dollars() -> None:
-    out = _numbers_to_speech("crossed $50 today")
-    assert "fifty dollars" in out and "$" not in out
+def test_first_sentence_keeps_single() -> None:
+    assert _first_sentence("Bulls smashing resistance") == "Bulls smashing resistance"
 
 
-def test_numbers_to_speech_percent() -> None:
-    out = _numbers_to_speech("up +1.2% on the day")
-    assert "percent" in out and "%" not in out and "1.2" not in out
+def test_first_sentence_does_not_split_decimal() -> None:
+    out = _first_sentence("Apple hits $312.07 on heavy volume!")
+    assert "$312.07" in out  # the decimal point is not a sentence break
 
 
-def test_numbers_to_speech_negative_percent() -> None:
-    out = _numbers_to_speech("down -3% hard")
-    assert "negative three percent" in out
-
-
-def test_numbers_to_speech_no_digits_remain() -> None:
-    out = _numbers_to_speech("RSI 68, price $312.07, change +1.2%, range $310.50-$313.11")
-    assert not any(ch.isdigit() for ch in out)
-
-
-def test_numbers_to_speech_leaves_plain_text() -> None:
-    assert _numbers_to_speech("bulls smashing resistance") == "bulls smashing resistance"
+def test_first_sentence_empty() -> None:
+    assert _first_sentence("   ") == ""
 
 
 # ── per-personality speed ────────────────────────────────────────────

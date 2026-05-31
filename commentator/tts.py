@@ -14,6 +14,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
+from num2words import num2words
 from snac import SNAC
 
 from commentator._config import env_float, env_int, parse_tensor_split
@@ -60,6 +61,51 @@ _CUSTOM_TOKEN_RE = re.compile(r"<custom_token_(\d+)>")
 
 # Sentinel pushed onto the token queue to signal the producer thread is done.
 _TOKEN_STREAM_END = object()
+
+# Number→speech: the model mangles digit strings ($312.07 spoken as "31.07"), so
+# convert prices/percentages/bare numbers to spoken words before synthesis. The
+# commentary keeps digits for display; only the TTS input is converted.
+# The comma-grouped branch requires a comma (+) so a plain run like 1000 falls to
+# the \d+ branch and is matched whole, not truncated to its first three digits.
+_MONEY_RE = re.compile(r"\$(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?")
+_PERCENT_RE = re.compile(r"([+-]?)(\d+(?:\.\d+)?)\s*%")
+_BARE_NUM_RE = re.compile(r"(?<![\w$])([+-]?\d+(?:\.\d+)?)(?![\w%])")
+
+
+def _spoken_money(m: "re.Match[str]") -> str:
+    dollars = int(m.group(1).replace(",", ""))
+    cents_s = m.group(2)
+    words = f"{num2words(dollars)} {'dollar' if dollars == 1 else 'dollars'}"
+    if cents_s:
+        cents = int(cents_s.ljust(2, "0")[:2])
+        if cents:
+            words += f" and {num2words(cents)} {'cent' if cents == 1 else 'cents'}"
+    return words
+
+
+def _spoken_percent(m: "re.Match[str]") -> str:
+    sign, num = m.group(1), m.group(2)
+    value = float(num) if "." in num else int(num)
+    prefix = "negative " if sign == "-" else ""
+    return f"{prefix}{num2words(value)} percent"
+
+
+def _spoken_number(m: "re.Match[str]") -> str:
+    num = m.group(1)
+    value = float(num) if "." in num else int(num.lstrip("+"))
+    return num2words(value)
+
+
+def numbers_to_speech(text: str) -> str:
+    """Replace prices, percentages, and bare numbers with spoken words so the TTS
+    model pronounces them correctly. Falls back to the original text on error."""
+    try:
+        text = _MONEY_RE.sub(_spoken_money, text)
+        text = _PERCENT_RE.sub(_spoken_percent, text)
+        text = _BARE_NUM_RE.sub(_spoken_number, text)
+    except (ValueError, OverflowError):
+        logger.warning("numbers_to_speech conversion failed; leaving text as-is")
+    return text
 
 # Valid SNAC codebook range: 0 inclusive to 4096 exclusive (4096 entries).
 _SNAC_CODE_MAX = 4096
@@ -371,6 +417,9 @@ def iter_audio_chunks(
     call is routed to that engine's adapter instead (see commentator.tts_engines).
     All engines yield 16-bit mono PCM at SAMPLE_RATE (24 kHz).
     """
+    # Convert digit numbers to spoken words for every engine (the displayed
+    # commentary keeps the concise digit form; only synthesis sees the words).
+    text = numbers_to_speech(text)
     if TTS_ENGINE != "orpheus":
         from commentator.tts_engines import iter_audio_chunks as _engine_chunks
 

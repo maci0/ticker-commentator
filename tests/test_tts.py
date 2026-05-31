@@ -21,9 +21,45 @@ from commentator.tts import (
     _speed_to_generation,
     _turn_token_into_id,
     iter_audio_chunks,
+    numbers_to_speech,
     pcm_chunks_to_wav,
     text_to_speech,
 )
+
+# ── numbers_to_speech ────────────────────────────────────────────────
+
+
+def test_numbers_to_speech_price_with_cents() -> None:
+    out = numbers_to_speech("Apple at $312.07 now")
+    assert "three hundred" in out and "twelve" in out and "seven cents" in out
+    assert "$" not in out and "312" not in out
+
+
+def test_numbers_to_speech_whole_dollars() -> None:
+    out = numbers_to_speech("crossed $50 today")
+    assert "fifty dollars" in out and "$" not in out
+
+
+def test_numbers_to_speech_thousands() -> None:
+    assert "one thousand" in numbers_to_speech("$1000.50").lower()
+
+
+def test_numbers_to_speech_percent() -> None:
+    out = numbers_to_speech("up +1.2% on the day")
+    assert "percent" in out and "%" not in out and "1.2" not in out
+
+
+def test_numbers_to_speech_negative_percent() -> None:
+    assert "negative three percent" in numbers_to_speech("down -3% hard")
+
+
+def test_numbers_to_speech_no_digits_remain() -> None:
+    out = numbers_to_speech("RSI 68, $312.07, +1.2%, range $310.50-$313.11")
+    assert not any(ch.isdigit() for ch in out)
+
+
+def test_numbers_to_speech_leaves_plain_text() -> None:
+    assert numbers_to_speech("bulls smashing resistance") == "bulls smashing resistance"
 
 # ── _format_prompt ──────────────────────────────────────────────────
 

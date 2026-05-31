@@ -21,7 +21,6 @@ from commentator.commentary import (
     _COMMON_RULES,
     _EMOTION_TAG_RE,
     _inject_emotion_tags,
-    _numbers_to_speech,
     _system_prompt,
     default_speed_for,
     default_voice_for,
@@ -32,6 +31,7 @@ from commentator.tts import (
     _iter_custom_tokens_from_text_stream,
     _speed_to_generation,
     _turn_token_into_id,
+    numbers_to_speech,
     pcm_chunks_to_wav,
 )
 
@@ -220,7 +220,7 @@ def test_default_speed_always_in_range(personality: str) -> None:
 
 @given(text=st.text(max_size=200))
 def test_numbers_to_speech_never_crashes(text: str) -> None:
-    out = _numbers_to_speech(text)
+    out = numbers_to_speech(text)
     assert isinstance(out, str)
 
 
@@ -230,7 +230,7 @@ def test_numbers_to_speech_never_crashes(text: str) -> None:
 )
 def test_numbers_to_speech_strips_price_digits(dollars: int, cents: int) -> None:
     """A formatted price is fully converted to words (no digits, no '$' left)."""
-    out = _numbers_to_speech(f"price ${dollars}.{cents:02d} now")
+    out = numbers_to_speech(f"price ${dollars}.{cents:02d} now")
     assert "$" not in out
     assert not any(ch.isdigit() for ch in out)
 

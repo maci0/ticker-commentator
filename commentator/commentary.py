@@ -8,7 +8,6 @@ import time
 from typing import Any
 
 from huggingface_hub import hf_hub_download
-from num2words import num2words
 
 from commentator._config import env_float, env_int, parse_tensor_split
 from commentator.analysis import AnalysisResult
@@ -217,50 +216,17 @@ _EMOTION_TAG_RE = re.compile(r"<(laugh|chuckle|sigh|cough|sniffle|groan|yawn|gas
 # Matches punctuation pauses but not decimal points or thousands separators
 # (e.g. "105.0" or "1,000").
 _PAUSE_RE = re.compile(r"(?<!\d)[,;!?…—]|\.(?!\d)")
-
-# Number→speech: TTS mangles digit strings ($312.07 spoken as "31.07"), so
-# convert prices/percents/bare numbers to plain words before synthesis.
-# The comma-grouped branch requires a comma (+) so a plain run like 1000 falls to
-# the \d+ branch and is matched whole, not truncated to its first three digits.
-_MONEY_RE = re.compile(r"\$(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?")
-_PERCENT_RE = re.compile(r"([+-]?)(\d+(?:\.\d+)?)\s*%")
-_BARE_NUM_RE = re.compile(r"(?<![\w$])([+-]?\d+(?:\.\d+)?)(?![\w%])")
+# Splits at sentence-ending punctuation followed by whitespace; the trailing \s
+# requirement avoids splitting decimals like "312.07".
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
-def _spoken_money(m: "re.Match[str]") -> str:
-    dollars = int(m.group(1).replace(",", ""))
-    cents_s = m.group(2)
-    words = f"{num2words(dollars)} {'dollar' if dollars == 1 else 'dollars'}"
-    if cents_s:
-        cents = int(cents_s.ljust(2, "0")[:2])
-        if cents:
-            words += f" and {num2words(cents)} {'cent' if cents == 1 else 'cents'}"
-    return words
-
-
-def _spoken_percent(m: "re.Match[str]") -> str:
-    sign, num = m.group(1), m.group(2)
-    value = float(num) if "." in num else int(num)
-    prefix = "negative " if sign == "-" else ""
-    return f"{prefix}{num2words(value)} percent"
-
-
-def _spoken_number(m: "re.Match[str]") -> str:
-    num = m.group(1)
-    value = float(num) if "." in num else int(num.lstrip("+"))
-    return num2words(value)
-
-
-def _numbers_to_speech(text: str) -> str:
-    """Replace prices, percentages, and bare numbers with spoken words so the TTS
-    model pronounces them correctly. Falls back to the original text on error."""
-    try:
-        text = _MONEY_RE.sub(_spoken_money, text)
-        text = _PERCENT_RE.sub(_spoken_percent, text)
-        text = _BARE_NUM_RE.sub(_spoken_number, text)
-    except (ValueError, OverflowError):
-        logger.warning("number-to-speech conversion failed; leaving text as-is")
-    return text
+def _first_sentence(text: str) -> str:
+    """Keep only the first sentence — personas tend to run on past the one-line
+    limit, so this enforces brevity deterministically regardless of the model."""
+    text = text.strip()
+    parts = _SENTENCE_SPLIT_RE.split(text, maxsplit=1)
+    return parts[0].strip() if parts else text
 
 
 def _get_commentary_llm() -> "Llama":
@@ -355,7 +321,8 @@ def _generate_with_llama_cpp(user_prompt: str, system_prompt: str) -> str:
     text = _THINK_RE.sub("", text).strip()
     text = _FOLKS_RE.sub("", text)
     text = _LADIES_RE.sub("", text)
-    return text.strip()
+    # Enforce the one-sentence limit even when the model runs on.
+    return _first_sentence(text.strip())
 
 
 # Tag pools pruned to the three Orpheus speaks cleanly in a commentator voice:
@@ -522,9 +489,8 @@ def generate_commentary(
     emote_scale = float(_profile(persona)["emote"])
     try:
         text = _generate_with_llama_cpp(user_prompt, _system_prompt(persona))
-        # Convert prices/percentages to spoken words so the TTS model pronounces
-        # them correctly (it otherwise garbles digit strings).
-        text = _numbers_to_speech(text)
+        # Numbers stay as digits here (clean for display); the TTS layer converts
+        # them to spoken words at synthesis time (commentator.tts.numbers_to_speech).
         if emote_scale <= 0:
             # No-emote personas (neutral/educator/zen): strip any stray tags.
             result = _EMOTION_TAG_RE.sub("", text).strip() if "<" in text else text
