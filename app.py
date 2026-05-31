@@ -32,6 +32,14 @@ from commentator import (
     pcm_chunks_to_wav,
     prefetch,
 )
+from commentator.live import (
+    clean_commentary,
+    is_significant_move,
+    prefetch_key,
+    refresh_bounds,
+    should_comment,
+    should_refresh,
+)
 
 _APP_DEBUG = os.getenv("APP_DEBUG", "0") == "1"
 # Speculative prefetch: during live-mode audio playback, generate the next
@@ -100,15 +108,7 @@ def _persona_label(name: str) -> str:
     return f"{emoji} {name.replace('_', ' ').title()}"
 
 
-# Strips Orpheus emotion-tag markers (and any stray angle-bracket directives) for
-# display — they steer the voice but shouldn't be shown as literal "<chuckle>".
-_DISPLAY_TAG_RE = re.compile(r"<[^>]+>")
 _TREND_COLOR = {"bullish": "#26a69a", "bearish": "#ef5350"}
-
-
-def _clean_text(text: str) -> str:
-    """Commentary text without emotion tags, whitespace-collapsed, for display."""
-    return re.sub(r"\s+", " ", _DISPLAY_TAG_RE.sub("", text)).strip()
 
 
 def _render_commentary_card(
@@ -118,7 +118,7 @@ def _render_commentary_card(
     label, sentiment-colored accent)."""
     color = _TREND_COLOR.get(trend, "#8899aa")
     badge = "🔴 ON AIR" if live else "🎙️"
-    safe = html.escape(_clean_text(text)) or "…"
+    safe = html.escape(clean_commentary(text)) or "…"
     st.markdown(
         f'<div style="border-left:5px solid {color};'
         f' background:rgba(127,127,127,0.08); padding:14px 18px;'
@@ -199,11 +199,7 @@ with st.sidebar:
     st.divider()
     st.subheader("🔴 Live Mode")
 
-    _refresh_max = 5 if period == "15m" else 120
-    # For the 15m window the max is 5s, so the min must be below it or the slider
-    # raises "min_value must be less than max_value" and crashes the app.
-    _refresh_min = 1 if period == "15m" else 5
-    _refresh_default = max(_refresh_min, min(15, _refresh_max))
+    _refresh_min, _refresh_max, _refresh_default = refresh_bounds(period)
     refresh_interval = st.slider(
         "Refresh interval (seconds)",
         _refresh_min,
@@ -273,15 +269,6 @@ def _audio_bundle(commentary: str, voice: str, speed: float) -> tuple[bytes | No
     return pcm_chunks_to_wav(chunks), max(seconds, 1.0) + 0.75
 
 
-def _prefetch_key(
-    ticker: str, period: str, interval: str, voice: str, speed: float, personality: str
-) -> tuple:
-    """Identity of a settings snapshot for the speculative no-move line. Price is
-    intentionally excluded: the prefetched line is the unchanged-market commentary,
-    reused when the next tick's move is below LIVE_PREFETCH_TOLERANCE_PCT."""
-    return (ticker, period, interval, voice, round(speed, 2), personality)
-
-
 # --- Session state init ---
 for key, default in [
     ("last_price", None),
@@ -311,11 +298,12 @@ _data_params_changed = (
     or st.session_state.get("cached_period") != period
     or st.session_state.get("cached_interval") != interval
 )
-need_refresh = (
-    force
-    or live_just_started
-    or live_interval_elapsed
-    or (not live and _data_params_changed)
+need_refresh = should_refresh(
+    force=force,
+    live=live,
+    live_just_started=live_just_started,
+    interval_elapsed=live_interval_elapsed,
+    data_params_changed=_data_params_changed,
 )
 
 # --- Fetch data (skip API calls during countdown-only reruns) ---
@@ -366,8 +354,12 @@ company_name = st.session_state["cached_company_name"]
 current_price = analysis["current_price"]
 last_price = st.session_state["last_price"]
 price_changed = last_price is not None and last_price != current_price
-need_commentary = force or (
-    live and (price_changed or live_just_started or live_interval_elapsed)
+need_commentary = should_comment(
+    force=force,
+    live=live,
+    price_changed=price_changed,
+    live_just_started=live_just_started,
+    interval_elapsed=live_interval_elapsed,
 )
 
 live_move: float | None = None
@@ -581,12 +573,8 @@ if need_commentary:
     # the no-move update during playback. Reuse it unless this tick is a
     # *significant* move (>= tolerance), which deserves fresh move-aware
     # commentary. Tiny ticks and interval refreshes reuse the prefetched line.
-    _significant_move = (
-        price_changed
-        and live_move_pct is not None
-        and abs(live_move_pct) >= _LIVE_PREFETCH_TOL
-    )
-    _pf_key = _prefetch_key(ticker, period, interval, voice, speed, personality)
+    _significant_move = is_significant_move(price_changed, live_move_pct, _LIVE_PREFETCH_TOL)
+    _pf_key = prefetch_key(ticker, period, interval, voice, speed, personality)
     _pf = (
         prefetch.take(_pf_key)
         if (_LIVE_PREFETCH and live and not _significant_move)
@@ -703,7 +691,7 @@ _history = st.session_state["commentary_history"]
 if len(_history) > 1:
     with st.expander(f"📜 Commentary history ({len(_history) - 1} previous)"):
         for _line in reversed(_history[:-1]):
-            st.markdown(f"› {_clean_text(_line)}")
+            st.markdown(f"› {clean_commentary(_line)}")
 
 # --- Live mode auto-refresh ---
 if live:
@@ -724,7 +712,7 @@ if live:
     # worker is a daemon thread calling only pure commentator functions (no
     # Streamlit/session_state access), so it is safe off the main thread.
     if _LIVE_PREFETCH and remaining > 0:
-        _next_key = _prefetch_key(ticker, period, interval, voice, speed, personality)
+        _next_key = prefetch_key(ticker, period, interval, voice, speed, personality)
         _hist = list(st.session_state["commentary_history"])
         _analysis, _name, _persona = analysis, company_name, personality
 
