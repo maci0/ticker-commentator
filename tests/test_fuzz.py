@@ -22,9 +22,11 @@ from commentator.commentary import (
     _EMOTION_TAG_RE,
     _inject_emotion_tags,
     _system_prompt,
+    default_voice_for,
 )
 from commentator.data import _TICKER_RE, _validate_ticker
 from commentator.tts import (
+    VALID_VOICES,
     _iter_custom_tokens_from_text_stream,
     _speed_to_generation,
     _turn_token_into_id,
@@ -201,6 +203,12 @@ def test_system_prompt_always_valid(personality: str) -> None:
     rules (unknown ones fall back to a valid persona)."""
     out = _system_prompt(personality)
     assert isinstance(out, str) and _COMMON_RULES in out
+
+
+@given(personality=st.text(max_size=40))
+def test_default_voice_always_valid(personality: str) -> None:
+    """Any personality string maps to a real Orpheus voice."""
+    assert default_voice_for(personality) in VALID_VOICES
 
 
 # ── analysis.analyze_stock (OHLCV math, NaN/edge guards) ─────────────

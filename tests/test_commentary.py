@@ -14,8 +14,10 @@ from commentator.commentary import (
     _inject_emotion_tags,
     _system_prompt,
     available_personalities,
+    default_voice_for,
     generate_commentary,
 )
+from commentator.tts import VALID_VOICES
 
 _TAG_RE = re.compile(r"<(laugh|chuckle|sigh|cough|sniffle|groan|yawn|gasp)>")
 
@@ -495,3 +497,22 @@ def test_personality_selects_its_system_prompt() -> None:
         generate_commentary(_make_analysis(), "AAPL", "Apple", personality="kramer")
     system_prompt_used = mock_llm.call_args[0][1]  # 2nd positional arg
     assert system_prompt_used == _system_prompt("kramer")
+
+
+def test_every_personality_has_a_valid_default_voice() -> None:
+    for name in available_personalities():
+        v = default_voice_for(name)
+        assert v in VALID_VOICES, (name, v)
+
+
+def test_default_voice_unknown_persona_is_valid_fallback() -> None:
+    assert default_voice_for("nonexistent") in VALID_VOICES
+
+
+def test_expected_personalities_present() -> None:
+    expected = {
+        "sports", "neutral", "kramer", "seinfeld", "attenborough", "wsb",
+        "noir", "educator", "gordon_ramsay", "pirate", "shakespeare",
+        "surfer", "doomer", "bob_ross", "zen",
+    }
+    assert set(available_personalities()) == expected

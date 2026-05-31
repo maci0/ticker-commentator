@@ -22,6 +22,7 @@ from commentator import (
     analyze_stock,
     audio_server,
     available_personalities,
+    default_voice_for,
     fetch_stock_data,
     fetch_stock_info,
     generate_commentary,
@@ -99,17 +100,22 @@ with st.sidebar:
     st.divider()
 
     voices = sorted(VALID_VOICES)
-    voice = st.selectbox(
-        "Commentator voice",
-        voices,
-        index=voices.index("leo"),
-    )
     _personalities = available_personalities()
     personality = st.selectbox(
         "Commentator style",
         _personalities,
         index=_personalities.index("sports") if "sports" in _personalities else 0,
-        help="sports = hyped play-by-play · neutral = calm analyst · kramer/seinfeld = comedic",
+        help="Each style has a default voice; pick a voice below to override.",
+    )
+    # Voice defaults to the chosen personality's voice. The per-personality key
+    # makes the selector reset to that default when the style changes, while a
+    # manual override still sticks within the same style.
+    _default_voice = default_voice_for(personality)
+    voice = st.selectbox(
+        "Commentator voice",
+        voices,
+        index=voices.index(_default_voice) if _default_voice in voices else 0,
+        key=f"voice_{personality}",
     )
     speed = st.slider("Speech speed", 0.8, 1.4, 1.3, step=0.05)
     use_tradingview = st.checkbox("Use TradingView embedded chart", value=False)
