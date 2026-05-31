@@ -21,6 +21,7 @@ from commentator.commentary import (
     _COMMON_RULES,
     _EMOTION_TAG_RE,
     _inject_emotion_tags,
+    _max_similarity,
     _system_prompt,
     default_speed_for,
     default_voice_for,
@@ -216,6 +217,12 @@ def test_default_voice_always_valid(personality: str) -> None:
 @given(personality=st.text(max_size=40))
 def test_default_speed_always_in_range(personality: str) -> None:
     assert 0.8 <= default_speed_for(personality) <= 1.4
+
+
+@given(text=st.text(max_size=120), recent=st.lists(st.text(max_size=120), max_size=6))
+def test_max_similarity_in_unit_range(text: str, recent: list) -> None:
+    s = _max_similarity(text, recent)
+    assert isinstance(s, float) and 0.0 <= s <= 1.0
 
 
 @given(text=st.text(max_size=200))

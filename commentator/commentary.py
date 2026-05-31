@@ -251,6 +251,31 @@ _COMMENTARY_TOP_P = env_float("COMMENTARY_TOP_P", 0.9)
 # one-line commentary from degenerating into repeated phrases.
 _COMMENTARY_REPEAT_PENALTY = env_float("COMMENTARY_REPEAT_PENALTY", 1.2)
 _COMMENTARY_MAX_TOKENS = env_int("COMMENTARY_MAX_TOKENS", 96)
+# Live-mode anti-repetition: if a generated line shares more than this fraction
+# of its words with a recent line (Jaccard), regenerate (up to N retries). The
+# prompt already discourages repeats; this is the safety net for long sessions.
+_SIMILARITY_MAX = max(0.0, min(1.0, env_float("COMMENTARY_SIMILARITY_MAX", 0.5)))
+_SIMILARITY_RETRIES = max(0, env_int("COMMENTARY_SIMILARITY_RETRIES", 2))
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _word_set(text: str) -> set[str]:
+    return set(_WORD_RE.findall(text.lower()))
+
+
+def _max_similarity(text: str, recent: list[str]) -> float:
+    """Highest Jaccard word-overlap between text and any recent line (0..1)."""
+    words = _word_set(text)
+    if not words:
+        return 0.0
+    best = 0.0
+    for line in recent:
+        other = _word_set(line)
+        if not other:
+            continue
+        overlap = len(words & other) / len(words | other)
+        best = max(best, overlap)
+    return best
 _COMMENTARY_LLM: "Llama | None" = None
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -531,8 +556,16 @@ def generate_commentary(
         persona = "sports"
 
     emote_scale = float(_profile(persona)["emote"])
+    recent = (previous_commentary or [])[-5:]
     try:
-        text = _generate_with_llama_cpp(user_prompt, _system_prompt(persona))
+        system_prompt = _system_prompt(persona)
+        text = _generate_with_llama_cpp(user_prompt, system_prompt)
+        # Anti-repetition: regenerate if the line is too close to a recent one.
+        for _ in range(_SIMILARITY_RETRIES):
+            if not recent or _max_similarity(text, recent) <= _SIMILARITY_MAX:
+                break
+            logger.info("commentary too similar to recent (persona=%s); regenerating", persona)
+            text = _generate_with_llama_cpp(user_prompt, system_prompt)
         # Numbers stay as digits here (clean for display); the TTS layer converts
         # them to spoken words at synthesis time (commentator.tts.numbers_to_speech).
         if emote_scale <= 0:

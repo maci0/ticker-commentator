@@ -581,3 +581,43 @@ def test_system_prompt_includes_persona_example() -> None:
     from commentator.commentary import _PERSONA_EXAMPLES
     for name, example in _PERSONA_EXAMPLES.items():
         assert example in _system_prompt(name)
+
+
+# ── anti-repetition similarity ───────────────────────────────────────
+
+
+def test_max_similarity_identical_is_one() -> None:
+    from commentator.commentary import _max_similarity
+    assert _max_similarity("bulls smash resistance", ["bulls smash resistance"]) == 1.0
+
+
+def test_max_similarity_disjoint_is_zero() -> None:
+    from commentator.commentary import _max_similarity
+    assert _max_similarity("bulls charge up", ["bears crater down"]) == 0.0
+
+
+def test_max_similarity_empty_recent() -> None:
+    from commentator.commentary import _max_similarity
+    assert _max_similarity("anything here", []) == 0.0
+
+
+def test_max_similarity_partial() -> None:
+    from commentator.commentary import _max_similarity
+    # {a,b,c,d} vs {a,b,e,f}: intersection 2, union 6 -> 0.333
+    s = _max_similarity("a b c d", ["a b e f"])
+    assert 0.3 < s < 0.4
+
+
+def test_generate_retries_when_too_similar() -> None:
+    """If the first line repeats a recent one, a fresh line is generated."""
+    outputs = iter(["Bulls smash resistance hard", "Bears crater the floor today"])
+    with patch(
+        "commentator.commentary._generate_with_llama_cpp",
+        side_effect=lambda *a, **k: next(outputs),
+    ):
+        result = generate_commentary(
+            _make_analysis(), "AAPL", "Apple",
+            previous_commentary=["Bulls smash resistance hard"],
+            personality="neutral",
+        )
+    assert "bears crater" in result.lower()  # used the second, non-repeating line
