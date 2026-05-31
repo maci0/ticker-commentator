@@ -14,6 +14,8 @@ from hypothesis import strategies as st
 
 from commentator import audio_server, tts_engines
 from commentator._config import env_float, env_int, parse_tensor_split
+from commentator.commentary import _EMOTION_TAG_RE, _inject_emotion_tags
+from commentator.data import _TICKER_RE, _validate_ticker
 from commentator.tts import (
     _iter_custom_tokens_from_text_stream,
     _speed_to_generation,
@@ -142,6 +144,44 @@ def test_pcm_chunks_to_wav_frame_count(chunks: list) -> None:
     total = sum(len(c) for c in chunks)
     with wave.open(io.BytesIO(wav), "rb") as wf:
         assert wf.getnframes() == total // 2  # 16-bit mono => 2 bytes/frame
+
+
+# ── data._validate_ticker (untrusted user input) ────────────────────
+
+
+@given(ticker=st.text(max_size=60))
+def test_validate_ticker_returns_valid_or_raises(ticker: str) -> None:
+    """Any input either normalizes to a regex-valid ticker or raises ValueError —
+    never any other exception (which would mean an unhandled crash path)."""
+    try:
+        out = _validate_ticker(ticker)
+    except ValueError:
+        return
+    assert _TICKER_RE.match(out) and out == out.strip().upper()
+
+
+# ── commentary._inject_emotion_tags (arbitrary LLM text) ─────────────
+
+
+_sentiment = st.fixed_dictionaries(
+    {
+        "trend": st.sampled_from(["bullish", "bearish", "sideways", "unknown"]),
+        "price_change_pct": st.floats(min_value=-50, max_value=50, allow_nan=False),
+        "volatility": st.sampled_from(["high", "normal", "low", "unknown"]),
+    }
+)
+
+
+@given(text=st.text(max_size=120), analysis=_sentiment)
+def test_inject_emotion_tags_never_crashes_and_only_known_tags(
+    text: str, analysis: dict
+) -> None:
+    out = _inject_emotion_tags(text, analysis)
+    assert isinstance(out, str)
+    # Any emotion tag in the output must come from the pruned pool the tuning
+    # restricted us to (arbitrary <...> in the fuzzed input is not our concern).
+    for tag in _EMOTION_TAG_RE.findall(out):
+        assert f"<{tag}>" in {"<laugh>", "<chuckle>", "<sigh>"}
 
 
 # ── _config helpers ──────────────────────────────────────────────────
