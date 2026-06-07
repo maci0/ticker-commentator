@@ -5,7 +5,7 @@ description = "Real-time stock chart commentary with a sports announcer voice, p
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "huggingface-hub>=0.23.0",
+    "huggingface-hub>=1.18.0",
     "numpy>=1.26.0",
     "pandas>=2.1.0",
     "plotly>=5.18.0",
