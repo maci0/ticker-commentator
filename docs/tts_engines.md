@@ -57,6 +57,26 @@ TTS_ENGINE=kokoro /opt/tts-kokoro/bin/python -m streamlit run app.py
 
 Tunables: `KOKORO_VOICE` (default `am_michael`), `KOKORO_LANG` (default `a`).
 
+## Qwen3-TTS (multilingual, named speakers)
+
+Open weights from Alibaba (https://github.com/QwenLM/Qwen3-TTS). Runs on ROCm;
+24 kHz output, 9 named speakers, 8 languages, plus a natural-language `instruct`
+style control. Heavy (1.7B, slow: cold RTF ~5 on the 7900 XTX).
+
+Unlike chatterbox/kokoro, qwen-tts **coexists in the main env** — it only adds
+transformers/accelerate, which the project core doesn't use, so torch and the
+HIP llama.cpp build are untouched. Just enable the extra:
+
+```bash
+uv sync --extra qwen
+TTS_ENGINE=qwen HIP_VISIBLE_DEVICES=0 uv run streamlit run app.py
+```
+
+Tunables: `QWEN_TTS_REPO` (default `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`),
+`QWEN_TTS_SPEAKER` (aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu,
+vivian), `QWEN_TTS_LANGUAGE` (auto/english/chinese/…), `QWEN_TTS_INSTRUCT`
+(optional, e.g. "speak excitedly").
+
 ## How it works
 
 `commentator/tts.py` reads `TTS_ENGINE`. For `orpheus` it uses the built-in

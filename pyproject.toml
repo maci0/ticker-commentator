@@ -21,6 +21,12 @@ dependencies = [
     "num2words>=0.5.14",
 ]
 
+[project.optional-dependencies]
+# Qwen3-TTS engine (TTS_ENGINE=qwen). Opt-in: `uv sync --extra qwen`. It only
+# adds transformers/accelerate (which the project core doesn't otherwise use),
+# so it coexists in the main env — no separate venv needed.
+qwen = ["qwen-tts>=0.1.1"]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.155.1",

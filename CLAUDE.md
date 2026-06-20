@@ -43,5 +43,5 @@ Pipeline: `User Input → yfinance → pandas analysis → llama.cpp commentary 
 - **Context warning**: llama.cpp may log `n_ctx_per_seq < n_ctx_train` — this is harmless; 4096 ctx is sufficient for the short prompts used here.
 - **GPU selection**: `GPU_DEVICE` (default 0) sets `HIP/CUDA_VISIBLE_DEVICES` before torch/llama.cpp init. Required when a weak integrated GPU is present — llama.cpp otherwise splits layers onto it and crashes (a discrete-GPU-only build lacks the iGPU's kernels).
 - **Streaming/prefetch are on by default and local-only**: `STREAM_AUDIO` binds 127.0.0.1, so set `STREAM_AUDIO=0` for remote/hosted Streamlit. Both are env-overridable.
-- **Alternative TTS engines**: `TTS_ENGINE=chatterbox|kokoro` need separate installs (`docs/tts_engines.md`); their torch/transformers pins conflict with the project, so they are NOT in `pyproject.toml`.
+- **Alternative TTS engines**: `TTS_ENGINE=qwen` (Qwen3-TTS) coexists in the main env — `uv sync --extra qwen` (it only adds transformers/accelerate, which the core doesn't use). `chatterbox`/`kokoro` pin conflicting torch builds, so they need separate installs (`docs/tts_engines.md`).
 - **Tests**: `tests/conftest.py` hides the GPU (`HIP/CUDA_VISIBLE_DEVICES=""`) because importing torch with the ROCm runtime active can crash the test runner; unit tests are CPU-only.

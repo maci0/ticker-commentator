@@ -1,18 +1,23 @@
 """Optional alternative TTS engines, selected via TTS_ENGINE.
 
-These are NOT installed by default: each pins torch/transformers versions that
-conflict with the project's (and with each other), so install the one you want
-into its own environment (see docs/tts_engines.md) and run the app from there.
+These are NOT installed by default. `qwen` coexists in the main env (its
+transformers pin doesn't clash with the project, which uses none): enable with
+`uv sync --extra qwen`. `chatterbox` and `kokoro` pin conflicting torch builds,
+so install those in their own environment (see docs/tts_engines.md).
 
 Every adapter yields 16-bit mono PCM at SAMPLE_RATE (24 kHz), matching the
 Orpheus path, so commentator.tts.pcm_chunks_to_wav consumes the output
 unchanged. Unlike Orpheus these models synthesize the whole clip at once, so the
 adapter yields a single chunk (no token-level streaming).
 
+Supported alternatives: chatterbox, kokoro, qwen (Qwen3-TTS, multilingual with
+named speakers and a natural-language `instruct` style control).
+
 Benchmarked on the project's RX 7900 XTX (see tts_eval/): naturalness UTMOS —
-chatterbox 4.37, kokoro 4.40, orpheus 4.26; speed (warm RTF, lower = faster) —
-orpheus 0.62, kokoro 0.20 (CPU), chatterbox 1.51. Chatterbox is the most
-expressive but slower than real time; kokoro is fastest but emotionally flat.
+chatterbox 4.37, kokoro 4.40, orpheus 4.26; speed (RTF, lower = faster) —
+orpheus 0.62, kokoro 0.20 (CPU), chatterbox 1.51, qwen ~5 (1.7B, cold; slowest).
+Chatterbox is the most expressive but slower than real time; kokoro is fastest
+but emotionally flat; qwen is multilingual but heavy.
 """
 
 import logging
@@ -28,6 +33,7 @@ SAMPLE_RATE = 24000
 
 _CHATTERBOX_MODEL = None
 _KOKORO_PIPELINE = None
+_QWEN_MODEL = None
 
 
 def _float_to_pcm16(audio: object) -> bytes:
@@ -50,8 +56,11 @@ def iter_audio_chunks(
         return _chatterbox_chunks(text)
     if engine == "kokoro":
         return _kokoro_chunks(text)
+    if engine == "qwen":
+        return _qwen_chunks(text)
     raise ValueError(
-        f"Unknown TTS_ENGINE {engine!r}; expected 'orpheus', 'chatterbox', or 'kokoro'"
+        f"Unknown TTS_ENGINE {engine!r}; expected 'orpheus', 'chatterbox', "
+        "'kokoro', or 'qwen'"
     )
 
 
@@ -105,3 +114,37 @@ def _kokoro_chunks(text: str) -> Generator[bytes, None, None]:
     pipe = _get_kokoro()
     for _gs, _ps, audio in pipe(text, voice=voice):
         yield _float_to_pcm16(audio)
+
+
+def _get_qwen() -> object:
+    global _QWEN_MODEL
+    if _QWEN_MODEL is not None:
+        return _QWEN_MODEL
+    try:
+        import torch
+        from qwen_tts import Qwen3TTSModel
+    except ImportError as exc:
+        raise RuntimeError(
+            "TTS_ENGINE=qwen needs the 'qwen-tts' package. It coexists in the main "
+            "env (no separate venv): run `uv sync --extra qwen`."
+        ) from exc
+    repo = os.getenv("QWEN_TTS_REPO", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
+    use_cuda = torch.cuda.is_available()
+    device_map = "cuda:0" if use_cuda else "cpu"
+    dtype = torch.bfloat16 if use_cuda else torch.float32
+    logger.info("Loading Qwen3-TTS %s on %s", repo, device_map)
+    _QWEN_MODEL = Qwen3TTSModel.from_pretrained(repo, device_map=device_map, dtype=dtype)
+    return _QWEN_MODEL
+
+
+def _qwen_chunks(text: str) -> Generator[bytes, None, None]:
+    # Qwen3-TTS outputs 24 kHz float audio (matches SAMPLE_RATE). The optional
+    # natural-language `instruct` steers delivery style (e.g. "speak excitedly").
+    speaker = os.getenv("QWEN_TTS_SPEAKER", "ryan")
+    language = os.getenv("QWEN_TTS_LANGUAGE", "english")
+    instruct = os.getenv("QWEN_TTS_INSTRUCT") or None
+    model = _get_qwen()
+    wavs, _sr = model.generate_custom_voice(
+        text=text, speaker=speaker, language=language, instruct=instruct
+    )
+    yield _float_to_pcm16(wavs[0])

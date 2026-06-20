@@ -72,6 +72,18 @@ def test_missing_kokoro_gives_install_hint() -> None:
         list(tts_engines.iter_audio_chunks("kokoro", "hello"))
 
 
+def test_missing_qwen_gives_install_hint() -> None:
+    # qwen-tts is an in-project extra (uv sync --extra qwen); only the
+    # not-installed path raises the hint, so skip when it is present.
+    try:
+        import qwen_tts  # noqa: F401
+    except ImportError:
+        with pytest.raises(RuntimeError, match="qwen-tts"):
+            list(tts_engines.iter_audio_chunks("qwen", "hello"))
+    else:
+        pytest.skip("qwen-tts installed; missing-package hint path not exercised")
+
+
 def test_sample_rate_matches_orpheus() -> None:
     from commentator.tts import SAMPLE_RATE
 
