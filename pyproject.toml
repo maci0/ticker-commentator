@@ -29,7 +29,7 @@ qwen = ["qwen-tts>=0.1.1"]
 
 [dependency-groups]
 dev = [
-    "hypothesis>=6.155.1",
+    "hypothesis>=6.155.6",
     "pytest>=8.4.0",
     "pytest-cov>=6.0",
     "ruff>=0.4.0",
