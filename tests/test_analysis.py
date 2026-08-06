@@ -5,7 +5,6 @@ sideways trends, NaN in data, zero first_close, RSI computation (all gains,
 mixed), SMA golden/death cross, ATR volatility levels, volume trends.
 """
 
-
 import pandas as pd
 
 from commentator.analysis import AnalysisError, analyze_stock
@@ -405,7 +404,15 @@ def test_result_has_all_expected_keys() -> None:
     df = _make_df(20)
     result = analyze_stock(df)
     expected_keys = {
-        "trend", "price_change_pct", "current_price", "open_price",
-        "high", "low", "volume_trend", "sma_cross", "volatility", "rsi",
+        "trend",
+        "price_change_pct",
+        "current_price",
+        "open_price",
+        "high",
+        "low",
+        "volume_trend",
+        "sma_cross",
+        "volatility",
+        "rsi",
     }
     assert set(result.keys()) == expected_keys

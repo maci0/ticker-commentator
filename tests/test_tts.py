@@ -7,8 +7,9 @@ without requiring GPU or model downloads.
 """
 
 import io
+import threading
 import wave
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -60,6 +61,7 @@ def test_numbers_to_speech_no_digits_remain() -> None:
 
 def test_numbers_to_speech_leaves_plain_text() -> None:
     assert numbers_to_speech("bulls smashing resistance") == "bulls smashing resistance"
+
 
 # ── _format_prompt ──────────────────────────────────────────────────
 
@@ -330,3 +332,134 @@ def test_text_to_speech_returns_wav_bytes() -> None:
         result = text_to_speech("hello", voice="zac")
     assert result is not None
     assert result[:4] == b"RIFF"  # WAV file magic bytes
+
+
+# ── SNAC / stream path (mocked models) ────────────────────────────────
+
+
+def test_get_snac_model_lazy_loads_once() -> None:
+    import commentator.tts as tts
+
+    fake_model = MagicMock()
+    fake_model.to.return_value = fake_model
+    with (
+        patch.object(tts, "_SNAC_MODEL", None),
+        patch.object(tts, "_SNAC_DEVICE", None),
+        patch.object(tts.torch.cuda, "is_available", return_value=False),
+        patch.object(tts.SNAC, "from_pretrained", return_value=fake_model) as load,
+    ):
+        m1, d1 = tts._get_snac_model()
+        m2, d2 = tts._get_snac_model()
+    assert m1 is fake_model and m2 is fake_model
+    assert str(d1) == "cpu" and str(d2) == "cpu"
+    load.assert_called_once()
+    fake_model.eval.assert_called_once()
+
+
+def test_decode_frames_to_pcm_with_mocked_snac() -> None:
+    import numpy as np
+
+    import commentator.tts as tts
+
+    fake_model = MagicMock()
+    # SNAC returns float audio in [-1, 1]; shape (1, 1, N).
+    fake_model.decode.return_value = MagicMock(
+        cpu=MagicMock(
+            return_value=MagicMock(
+                numpy=MagicMock(return_value=np.zeros((1, 1, 32), dtype=np.float32))
+            )
+        )
+    )
+    tokens = [0] * 28  # 4 frames
+    with patch.object(tts, "_get_snac_model", return_value=(fake_model, tts.torch.device("cpu"))):
+        pcm = tts._decode_frames_to_pcm(tokens)
+    assert pcm is not None
+    assert len(pcm) == 32 * 2  # int16
+    fake_model.decode.assert_called_once()
+
+
+def test_stream_custom_tokens_yields_and_propagates_error() -> None:
+    import commentator.tts as tts
+
+    def fake_stream(*_a, **_k):
+        yield {"choices": [{"text": "<custom_token_100>"}]}
+        yield {"choices": [{"text": "<custom_token_101>"}]}
+
+    fake_llm = MagicMock(side_effect=fake_stream)
+    stop = threading.Event()
+    with patch.object(tts, "_get_llama_model", return_value=fake_llm):
+        tokens = list(
+            tts._stream_custom_tokens(
+                "prompt", {"temperature": 0.6, "top_p": 0.9, "repeat_penalty": 1.1}, stop
+            )
+        )
+    assert tokens == [100, 101]
+
+    def boom(*_a, **_k):
+        raise RuntimeError("gen fail")
+        yield  # pragma: no cover
+
+    fake_llm = MagicMock(side_effect=boom)
+    stop = threading.Event()
+    with (
+        patch.object(tts, "_get_llama_model", return_value=fake_llm),
+        pytest.raises(RuntimeError, match="gen fail"),
+    ):
+        list(
+            tts._stream_custom_tokens(
+                "prompt", {"temperature": 0.6, "top_p": 0.9, "repeat_penalty": 1.1}, stop
+            )
+        )
+
+
+def test_iter_audio_chunks_gen_decodes_and_times_out() -> None:
+    import commentator.tts as tts
+
+    # Enough raw tokens for one first-chunk (>= FIRST_CHUNK_FRAMES * 7).
+    # Use offsets that map to non-negative SNAC ids via _turn_token_into_id.
+    # token = raw - 10 - (index % 7) * 4096  → pick raw = 10 + codebook_offset + small
+    raw_tokens = []
+    for i in range(8 * 7):
+        raw_tokens.append(10 + (i % 7) * 4096 + 1)
+
+    def token_gen(*_a, **_k):
+        yield from raw_tokens
+
+    pcm = b"\x00\x00" * 16
+    with (
+        patch.object(tts, "_stream_custom_tokens", side_effect=token_gen),
+        patch.object(tts, "_decode_frames_to_pcm", return_value=pcm) as decode,
+        patch.object(tts, "_MAX_DECODE_SECONDS", 60.0),
+        patch.object(tts, "_FIRST_CHUNK_FRAMES", 4),
+        patch.object(tts, "_CHUNK_FRAMES", 8),
+    ):
+        chunks = list(tts._iter_audio_chunks_gen("hello", "zac", 1.0))
+    assert chunks
+    assert decode.called
+
+    # Timeout path: force elapsed > max after first token poll.
+    times = iter([0.0, 0.0, 100.0])  # start, decode_start, timeout check
+
+    def fake_time():
+        try:
+            return next(times)
+        except StopIteration:
+            return 100.0
+
+    with (
+        patch.object(tts, "_stream_custom_tokens", side_effect=token_gen),
+        patch.object(tts, "_decode_frames_to_pcm", return_value=pcm),
+        patch.object(tts, "_MAX_DECODE_SECONDS", 1.0),
+        patch.object(tts.time, "time", side_effect=fake_time),
+    ):
+        # Should not hang and may yield zero or partial chunks after timeout.
+        list(tts._iter_audio_chunks_gen("hello", "zac", 1.0))
+
+
+def test_get_llama_model_delegates_to_lazy() -> None:
+    import commentator.tts as tts
+
+    sentinel = object()
+    with patch.object(tts._LLAMA_MODEL, "get", return_value=sentinel) as get:
+        assert tts._get_llama_model() is sentinel
+    get.assert_called_once()

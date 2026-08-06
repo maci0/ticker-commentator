@@ -18,6 +18,7 @@ class StockInfo(TypedDict):
 
     name: str
 
+
 # Matches standard tickers: AAPL, BRK.B, ^GSPC, ES=F, BTC-USD, etc.
 _TICKER_RE = re.compile(r"^[A-Z0-9^][A-Z0-9.^=\-]{0,19}$")
 
@@ -47,15 +48,12 @@ def _validate_ticker(ticker: str) -> str:
         raise ValueError("Ticker symbol must not be empty")
     if not _TICKER_RE.match(cleaned):
         raise ValueError(
-            f"Invalid ticker symbol: {cleaned!r} — "
-            "expected letters, digits, '.', '^', '=', or '-'"
+            f"Invalid ticker symbol: {cleaned!r} — expected letters, digits, '.', '^', '=', or '-'"
         )
     return cleaned
 
 
-def fetch_stock_data(
-    ticker: str, period: str = "1d", interval: str = "1m"
-) -> pd.DataFrame:
+def fetch_stock_data(ticker: str, period: str = "1d", interval: str = "1m") -> pd.DataFrame:
     """Fetch OHLCV data for a ticker. Returns empty DataFrame on failure.
 
     Raises ValueError for invalid ticker, period, or interval values (does not
@@ -77,9 +75,10 @@ def fetch_stock_data(
         df = t.history(period=request_period, interval=request_interval)
         if df.empty:
             logger.warning(
-                "no_data ticker=%s period=%s interval=%s"
-                " — market may be closed or symbol invalid",
-                ticker, period, interval,
+                "no_data ticker=%s period=%s interval=%s — market may be closed or symbol invalid",
+                ticker,
+                period,
+                interval,
             )
             return pd.DataFrame()
         if period == "15m":
@@ -88,7 +87,11 @@ def fetch_stock_data(
             df = df[df.index >= window_start]
         logger.info(
             "fetch_complete ticker=%s rows=%d period=%s interval=%s elapsed=%.2fs",
-            ticker, len(df), period, interval, time.time() - t_fetch,
+            ticker,
+            len(df),
+            period,
+            interval,
+            time.time() - t_fetch,
         )
         return df
     except ValueError:

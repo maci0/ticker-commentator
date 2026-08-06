@@ -60,11 +60,16 @@ jobs:
       - name: Install project and dev dependencies
         run: |
           uv export --all-groups --no-hashes --format requirements-txt \
-            | grep -Ev '^(torch|torchaudio|torchvision|triton)' \
+            | grep -Eiv '^(torch|torchaudio|torchvision|triton)([-=<>! ]|$)' \
             > /tmp/ci-requirements.txt
           uv pip install --system -r /tmp/ci-requirements.txt
+          # Editable install so `import commentator` resolves (hatchling package).
+          uv pip install --system -e . --no-deps
 
       - name: Run tests
+        env:
+          HIP_VISIBLE_DEVICES: ""
+          CUDA_VISIBLE_DEVICES: ""
         run: pytest --tb=short --cov=commentator --cov-report=term-missing
 
   audit:
@@ -83,5 +88,6 @@ jobs:
       - name: Install pip-audit
         run: uv tool install pip-audit
 
+      # ROCm torch/triton pins (e.g. torch==…+rocm7.1) are not on PyPI; exclude them.
       - name: Audit dependencies for known vulnerabilities
-        run: uv export --no-hashes --format requirements-txt | uv tool run pip-audit -r /dev/stdin
+        run: make audit

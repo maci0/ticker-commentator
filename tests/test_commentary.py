@@ -513,9 +513,21 @@ def test_default_voice_unknown_persona_is_valid_fallback() -> None:
 
 def test_expected_personalities_present() -> None:
     expected = {
-        "sports", "neutral", "kramer", "seinfeld", "attenborough", "wsb",
-        "noir", "educator", "gordon_ramsay", "pirate", "shakespeare",
-        "surfer", "doomer", "bob_ross", "zen",
+        "sports",
+        "neutral",
+        "kramer",
+        "seinfeld",
+        "attenborough",
+        "wsb",
+        "noir",
+        "educator",
+        "gordon_ramsay",
+        "pirate",
+        "shakespeare",
+        "surfer",
+        "doomer",
+        "bob_ross",
+        "zen",
     }
     assert set(available_personalities()) == expected
 
@@ -579,6 +591,7 @@ def test_emote_scale_zero_adds_no_tags() -> None:
 
 def test_system_prompt_includes_persona_example() -> None:
     from commentator.commentary import _PERSONA_EXAMPLES
+
     for name, example in _PERSONA_EXAMPLES.items():
         assert example in _system_prompt(name)
 
@@ -588,21 +601,25 @@ def test_system_prompt_includes_persona_example() -> None:
 
 def test_max_similarity_identical_is_one() -> None:
     from commentator.commentary import _max_similarity
+
     assert _max_similarity("bulls smash resistance", ["bulls smash resistance"]) == 1.0
 
 
 def test_max_similarity_disjoint_is_zero() -> None:
     from commentator.commentary import _max_similarity
+
     assert _max_similarity("bulls charge up", ["bears crater down"]) == 0.0
 
 
 def test_max_similarity_empty_recent() -> None:
     from commentator.commentary import _max_similarity
+
     assert _max_similarity("anything here", []) == 0.0
 
 
 def test_max_similarity_partial() -> None:
     from commentator.commentary import _max_similarity
+
     # {a,b,c,d} vs {a,b,e,f}: intersection 2, union 6 -> 0.333
     s = _max_similarity("a b c d", ["a b e f"])
     assert 0.3 < s < 0.4
@@ -616,7 +633,9 @@ def test_generate_retries_when_too_similar() -> None:
         side_effect=lambda *a, **k: next(outputs),
     ):
         result = generate_commentary(
-            _make_analysis(), "AAPL", "Apple",
+            _make_analysis(),
+            "AAPL",
+            "Apple",
             previous_commentary=["Bulls smash resistance hard"],
             personality="neutral",
         )

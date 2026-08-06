@@ -59,8 +59,7 @@ def iter_audio_chunks(
     if engine == "qwen":
         return _qwen_chunks(text)
     raise ValueError(
-        f"Unknown TTS_ENGINE {engine!r}; expected 'orpheus', 'chatterbox', "
-        "'kokoro', or 'qwen'"
+        f"Unknown TTS_ENGINE {engine!r}; expected 'orpheus', 'chatterbox', 'kokoro', or 'qwen'"
     )
 
 

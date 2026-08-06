@@ -159,6 +159,7 @@ def test_fetch_stock_info_returns_ticker_on_failure(monkeypatch) -> None:
 
 def test_fetch_stock_data_network_error_returns_empty(monkeypatch) -> None:
     """Non-ValueError exceptions from yfinance should be swallowed and return an empty DataFrame."""
+
     def _boom(_ticker: str):
         raise ConnectionError("network down")
 
@@ -230,9 +231,7 @@ def test_fetch_stock_info_truncates_long_name(monkeypatch) -> None:
 def test_fetch_stock_info_sanitizes_unicode_newlines(monkeypatch) -> None:
     """Unicode newline-like characters must be stripped to prevent prompt injection."""
     # U+0085 NEL, U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR
-    fake_ticker = _FakeTicker(
-        pd.DataFrame(), info={"shortName": "Apple\u0085Inc\u2028Corp\u2029"}
-    )
+    fake_ticker = _FakeTicker(pd.DataFrame(), info={"shortName": "Apple\u0085Inc\u2028Corp\u2029"})
     monkeypatch.setattr(data.yf, "Ticker", lambda _: fake_ticker)
 
     result = data.fetch_stock_info("AAPL")

@@ -13,11 +13,11 @@ __all__ = ["analyze_stock", "AnalysisResult", "AnalysisError"]
 
 _REQUIRED_COLUMNS = frozenset({"Open", "High", "Low", "Close", "Volume"})
 
-_TREND_THRESHOLD_PCT = 1.0   # % change to classify as bullish/bearish
-_VOLUME_HEAVY_RATIO = 1.5    # recent/earlier vol ratio to be "heavy"
-_VOLUME_LIGHT_RATIO = 0.5    # recent/earlier vol ratio to be "light"
-_ATR_HIGH_PCT = 2.0          # ATR/price % above which volatility is "high"
-_ATR_MEDIUM_PCT = 0.8        # ATR/price % above which volatility is "medium"
+_TREND_THRESHOLD_PCT = 1.0  # % change to classify as bullish/bearish
+_VOLUME_HEAVY_RATIO = 1.5  # recent/earlier vol ratio to be "heavy"
+_VOLUME_LIGHT_RATIO = 0.5  # recent/earlier vol ratio to be "light"
+_ATR_HIGH_PCT = 2.0  # ATR/price % above which volatility is "high"
+_ATR_MEDIUM_PCT = 0.8  # ATR/price % above which volatility is "medium"
 
 
 def _safe_round(value: float, ndigits: int) -> float:
@@ -218,7 +218,12 @@ def analyze_stock(df: pd.DataFrame) -> AnalysisResult | AnalysisError:
     logger.debug(
         "analysis_result trend=%s price=%.2f change_pct=%+.2f rsi=%s "
         "volatility=%s sma_cross=%s rows=%d",
-        result["trend"], result["current_price"], result["price_change_pct"],
-        result["rsi"], result["volatility"], result["sma_cross"], len(df),
+        result["trend"],
+        result["current_price"],
+        result["price_change_pct"],
+        result["rsi"],
+        result["volatility"],
+        result["sma_cross"],
+        len(df),
     )
     return result

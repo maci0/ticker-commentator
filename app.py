@@ -1,19 +1,14 @@
 """Streamlit UI for the real-time stock chart commentator.
 
-Manages Streamlit session state, renders the Plotly/TradingView chart,
-triggers commentary and TTS generation, and drives the live-mode auto-refresh
-loop. .env is loaded by commentator/__init__.py on first import.
+Manages Streamlit session state, renders charts, triggers commentary and TTS,
+and drives the live-mode auto-refresh loop. .env is loaded by
+commentator/__init__.py on first import.
 """
-import base64
-import html
-import json
+
 import logging
-import os
 import re
 import time
 
-import numpy as np
-import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -32,6 +27,8 @@ from commentator import (
     pcm_chunks_to_wav,
     prefetch,
 )
+from commentator._config import env_abs_float, env_bool
+from commentator.charts import build_candlestick_figure, tradingview_embed_html
 from commentator.live import (
     clean_commentary,
     is_significant_move,
@@ -40,26 +37,33 @@ from commentator.live import (
     should_comment,
     should_refresh,
 )
+from commentator.playback import (
+    data_uri_audio_html,
+    streaming_audio_html,
+    synthesize_wav,
+)
+from commentator.ui_html import (
+    commentary_card_html,
+    persona_blurb,
+    persona_label,
+)
 
-_APP_DEBUG = os.getenv("APP_DEBUG", "0") == "1"
+_APP_DEBUG = env_bool("APP_DEBUG", False)
 # Speculative prefetch: during live-mode audio playback, generate the next
 # (unchanged-data) update in a background thread so an interval refresh that
 # finds the same price serves instantly instead of blocking on regeneration.
 # On by default; set LIVE_PREFETCH=0 to restore plain regenerate-each-cycle.
-_LIVE_PREFETCH = os.getenv("LIVE_PREFETCH", "1") == "1"
+_LIVE_PREFETCH = env_bool("LIVE_PREFETCH", True)
 # A live tick whose move is smaller than this (percent) reuses the prefetched
 # no-move line instead of regenerating. Exact-price matching would almost never
 # hit on a liquid stock, so the prefetch only pays off with a small tolerance.
 # Moves at/above it still get fresh, move-aware commentary.
-try:
-    _LIVE_PREFETCH_TOL = abs(float(os.getenv("LIVE_PREFETCH_TOLERANCE_PCT", "0.05")))
-except ValueError:
-    _LIVE_PREFETCH_TOL = 0.05
+_LIVE_PREFETCH_TOL = env_abs_float("LIVE_PREFETCH_TOLERANCE_PCT", 0.05)
 # Stream audio to the player as it decodes (time-to-first-audio ~1s vs ~4s) via a
 # local HTTP server. On by default for local use; the server binds 127.0.0.1, so
 # set STREAM_AUDIO=0 for remote/hosted Streamlit (the browser can't reach it).
 # Falls back to full-WAV autoplay automatically if the port can't bind.
-_STREAM_AUDIO = os.getenv("STREAM_AUDIO", "1") == "1"
+_STREAM_AUDIO = env_bool("STREAM_AUDIO", True)
 
 logging.basicConfig(
     level=logging.DEBUG if _APP_DEBUG else logging.INFO,
@@ -78,58 +82,20 @@ _TICKER_SAFE_RE = re.compile(r"[^A-Z0-9.^=\-]")
 
 st.set_page_config(page_title="Stock Commentator", page_icon="📈", layout="wide")
 
-# UI flavor for each commentator personality: (emoji, one-line blurb). Keys must
-# match commentator.commentary personalities; unknown keys fall back gracefully.
-_PERSONA_UI = {
-    "sports": ("🏟️", "Hyped play-by-play"),
-    "neutral": ("📊", "Calm market analyst"),
-    "kramer": ("📣", "Mad Money showman"),
-    "seinfeld": ("🎤", "Observational comedy"),
-    "attenborough": ("🦁", "Nature-doc narrator"),
-    "wsb": ("🚀", "Diamond-hands degenerate"),
-    "noir": ("🕵️", "Hardboiled detective"),
-    "educator": ("🎓", "Explains the indicators"),
-    "gordon_ramsay": ("🔥", "Furious chef"),
-    "pirate": ("🏴‍☠️", "Swashbuckling captain"),
-    "shakespeare": ("🎭", "Dramatic bard"),
-    "surfer": ("🏄", "Chill surfer dude"),
-    "doomer": ("💀", "Permabear doom"),
-    "bob_ross": ("🎨", "Serene painter"),
-    "zen": ("🧘", "Tranquil zen master"),
-}
 
-
-def _persona_emoji(name: str) -> str:
-    return _PERSONA_UI.get(name, ("🎙️", ""))[0]
-
-
-def _persona_label(name: str) -> str:
-    emoji, _ = _PERSONA_UI.get(name, ("🎙️", ""))
-    return f"{emoji} {name.replace('_', ' ').title()}"
-
-
-_TREND_COLOR = {"bullish": "#26a69a", "bearish": "#ef5350"}
-
-
-def _render_commentary_card(
-    text: str, personality: str, trend: str, *, live: bool = False
-) -> None:
-    """Render the commentary as a styled broadcast card (clean text, persona
-    label, sentiment-colored accent)."""
-    color = _TREND_COLOR.get(trend, "#8899aa")
-    badge = "🔴 ON AIR" if live else "🎙️"
-    safe = html.escape(clean_commentary(text)) or "…"
+def _render_commentary_card(text: str, personality: str, trend: str, *, live: bool = False) -> None:
     st.markdown(
-        f'<div style="border-left:5px solid {color};'
-        f' background:rgba(127,127,127,0.08); padding:14px 18px;'
-        f' border-radius:8px; margin:4px 0 12px 0;">'
-        f'<div style="font-size:0.78rem; letter-spacing:.04em; opacity:.6;'
-        f' text-transform:uppercase; margin-bottom:6px;">'
-        f"{html.escape(_persona_label(personality))} &nbsp;·&nbsp; {badge}</div>"
-        f'<div style="font-size:1.35rem; line-height:1.55; font-weight:500;">'
-        f"{safe}</div></div>",
+        commentary_card_html(text, personality, trend, live=live),
         unsafe_allow_html=True,
     )
+
+
+def _render_audio(audio: bytes, *, autoplay: bool = False) -> None:
+    st.html(data_uri_audio_html(audio, safe_ticker, autoplay=autoplay))
+
+
+def _render_streaming_audio(stream_id: str, port: int) -> None:
+    st.html(streaming_audio_html(stream_id, port, safe_ticker))
 
 
 # --- Sidebar controls ---
@@ -158,9 +124,7 @@ with st.sidebar:
     }
     intervals = interval_options.get(period, ["1m"])
     default_interval = "15m" if "15m" in intervals else intervals[0]
-    interval = st.selectbox(
-        "Interval", intervals, index=intervals.index(default_interval)
-    )
+    interval = st.selectbox("Interval", intervals, index=intervals.index(default_interval))
     use_tradingview = st.checkbox("Use TradingView embedded chart", value=False)
 
     st.divider()
@@ -172,9 +136,9 @@ with st.sidebar:
         "Style",
         _personalities,
         index=_personalities.index("sports") if "sports" in _personalities else 0,
-        format_func=_persona_label,
+        format_func=persona_label,
     )
-    st.caption(_PERSONA_UI.get(personality, ("", "Custom style"))[1])
+    st.caption(persona_blurb(personality))
     # Voice defaults to the chosen personality's voice. The per-personality key
     # makes the selector reset to that default when the style changes, while a
     # manual override still sticks within the same style.
@@ -219,54 +183,7 @@ with st.sidebar:
 safe_ticker = _TICKER_SAFE_RE.sub("", ticker)
 
 st.title(f"{ticker} — Stock Commentator")
-st.caption(
-    f"{_persona_label(personality)} · voice: {voice}"
-    + (" · 🔴 LIVE" if live else "")
-)
-
-
-def _render_audio(audio: bytes, *, autoplay: bool = False) -> None:
-    """Render an HTML audio element.
-
-    autoplay=True adds a unique DOM id so Streamlit creates a new element on
-    each render, which is required for autoplay to retrigger on live refreshes.
-    """
-    b64 = base64.b64encode(audio).decode()
-    uid_attr = f'id="a{int(time.time() * 1000)}" ' if autoplay else ""
-    autoplay_attr = "autoplay " if autoplay else ""
-    st.html(
-        f'<audio {uid_attr}{autoplay_attr}controls src="data:audio/wav;base64,{b64}"'
-        f' style="width:100%;display:block"'
-        f' title="Stock commentary for {safe_ticker}"'
-        f' aria-label="Stock commentary audio"></audio>'
-    )
-
-
-def _render_streaming_audio(stream_id: str, port: int) -> None:
-    """Render an <audio> element pointing at the local streaming endpoint so the
-    browser plays chunks as they decode. Unique id forces a fresh element each run."""
-    src = f"http://127.0.0.1:{port}/audio/{stream_id}.wav"
-    uid = f"a{int(time.time() * 1000)}"
-    st.html(
-        f'<audio id="{uid}" autoplay controls src="{src}"'
-        f' style="width:100%;display:block"'
-        f' title="Stock commentary for {safe_ticker}"'
-        f' aria-label="Stock commentary audio (streaming)"></audio>'
-    )
-
-
-def _audio_bundle(commentary: str, voice: str, speed: float) -> tuple[bytes | None, float | None]:
-    """Synthesize a commentary line to WAV bytes + playback duration.
-
-    Pure (no Streamlit calls) so the live-prefetch worker can run it off the main
-    thread. Returns (None, None) when no audio is produced.
-    """
-    chunks = list(iter_audio_chunks(commentary, voice=voice, speed=speed))
-    if not chunks:
-        return None, None
-    seconds = sum(len(c) for c in chunks) / (SAMPLE_RATE * 2)
-    # +0.75s tail buffer mirrors the main path so playback isn't cut off.
-    return pcm_chunks_to_wav(chunks), max(seconds, 1.0) + 0.75
+st.caption(f"{persona_label(personality)} · voice: {voice}" + (" · 🔴 LIVE" if live else ""))
 
 
 # --- Session state init ---
@@ -319,9 +236,7 @@ if need_refresh or "cached_df" not in st.session_state:
             st.stop()
         if df.empty:
             logger.error("No data for ticker=%s period=%s interval=%s", ticker, period, interval)
-            st.error(
-                f"No data for **{ticker}**. Check the symbol or try when the market is open."
-            )
+            st.error(f"No data for **{ticker}**. Check the symbol or try when the market is open.")
             st.stop()
         analysis = analyze_stock(df)
         if "error" in analysis:
@@ -372,7 +287,11 @@ if price_changed:
     live_direction = "up" if _move > 0 else "down"
     logger.info(
         "price_change ticker=%s from=%.2f to=%.2f move=%+.2f pct=%+.3f",
-        ticker, last_price, current_price, live_move, live_move_pct,
+        ticker,
+        last_price,
+        current_price,
+        live_move,
+        live_move_pct,
     )
 
 # --- Layout ---
@@ -384,140 +303,19 @@ with col_chart:
         _chart_title += " — LIVE"
     st.subheader(_chart_title)
     if use_tradingview:
-        interval_map = {
-            "1m": "1",
-            "2m": "2",
-            "5m": "5",
-            "15m": "15",
-            "30m": "30",
-            "1h": "60",
-            "1d": "D",
-            "1wk": "W",
-        }
-        tv_config = {
-            "allow_symbol_change": True,
-            "calendar": False,
-            "details": False,
-            "hide_side_toolbar": True,
-            "hide_top_toolbar": False,
-            "hide_legend": False,
-            "hide_volume": False,
-            "hotlist": False,
-            "interval": interval_map.get(interval, "D"),
-            "locale": "en",
-            "save_image": True,
-            "style": "1",
-            "symbol": safe_ticker,
-            "theme": "dark",
-            "timezone": "Etc/UTC",
-            "backgroundColor": "#0F0F0F",
-            "gridColor": "rgba(242, 242, 242, 0.06)",
-            "watchlist": [],
-            "withdateranges": False,
-            "compareSymbols": [],
-            "studies": [],
-            "width": "100%",
-            "height": 700,
-        }
-        _tv_widget_div = (
-            '  <div class="tradingview-widget-container__widget"'
-            ' style="height:calc(100% - 32px);width:100%"></div>'
-        )
-        _tv_copyright_div = (
-            f'  <div class="tradingview-widget-copyright">'
-            f'<a href="https://www.tradingview.com/symbols/{safe_ticker}/"'
-            f' rel="noopener nofollow" target="_blank">'
-            f'<span class="blue-text">{safe_ticker} chart</span></a>'
-            '<span class="trademark"> by TradingView</span></div>'
-        )
-        _tv_script_src = (
-            "https://s3.tradingview.com/external-embedding/"
-            "embed-widget-advanced-chart.js"
-        )
         components.html(
-            "\n".join([
-                '<div class="tradingview-widget-container" style="height:740px;width:100%">',
-                _tv_widget_div,
-                _tv_copyright_div,
-                f'  <script type="text/javascript" src="{_tv_script_src}" async>',
-                f"  {json.dumps(tv_config)}",
-                "  </script>",
-                "</div>",
-            ]),
+            tradingview_embed_html(safe_ticker, interval),
             height=780,
             scrolling=False,
         )
     else:
         if need_refresh or "cached_fig" not in st.session_state:
-            fig = go.Figure()
-
-            fig.add_trace(
-                go.Candlestick(
-                    x=df.index,
-                    open=df["Open"],
-                    high=df["High"],
-                    low=df["Low"],
-                    close=df["Close"],
-                    name="Price",
-                )
+            st.session_state["cached_fig"] = build_candlestick_figure(
+                df,
+                sma_20=st.session_state.get("cached_sma_20"),
+                sma_50=st.session_state.get("cached_sma_50"),
             )
-
-            if len(df) >= 20:
-                fig.add_trace(
-                    go.Scatter(
-                        x=df.index,
-                        y=st.session_state.get("cached_sma_20"),
-                        name="SMA 20",
-                        line=dict(color="#FFA500", width=1),
-                        opacity=0.8,
-                    )
-                )
-            if len(df) >= 50:
-                fig.add_trace(
-                    go.Scatter(
-                        x=df.index,
-                        y=st.session_state.get("cached_sma_50"),
-                        name="SMA 50",
-                        line=dict(color="#1E90FF", width=1),
-                        opacity=0.8,
-                    )
-                )
-
-            colors = np.where(df["Close"] >= df["Open"], "#26a69a", "#ef5350").tolist()
-            fig.add_trace(
-                go.Bar(
-                    x=df.index,
-                    y=df["Volume"],
-                    name="Volume",
-                    marker_color=colors,
-                    opacity=0.3,
-                    yaxis="y2",
-                    showlegend=False,
-                )
-            )
-
-            fig.update_layout(
-                yaxis=dict(title="Price", side="left"),
-                yaxis2=dict(title="Volume", side="right", overlaying="y", showgrid=False),
-                xaxis=dict(
-                    rangeslider=dict(visible=False),
-                    type="date",
-                ),
-                template="plotly_dark",
-                height=500,
-                margin=dict(l=50, r=50, t=30, b=30),
-                showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis_rangebreaks=[
-                    dict(bounds=["sat", "mon"]),
-                ],
-            )
-
-            st.session_state["cached_fig"] = fig
-        else:
-            fig = st.session_state["cached_fig"]
-
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(st.session_state["cached_fig"], use_container_width=True)
 
 with col_info:
     st.subheader("📡 Live Analysis" if live else "📈 Analysis")
@@ -547,7 +345,7 @@ with col_info:
 # --- Commentary ---
 st.divider()
 st.subheader("🎙️ Commentary")
-st.caption(f"{_persona_label(personality)} · voice: {voice}")
+st.caption(f"{persona_label(personality)} · voice: {voice}")
 
 if need_commentary:
     # Claim this cycle up front so fast failures do not trigger immediate retries.
@@ -562,7 +360,9 @@ if need_commentary:
         _trigger = "price_change"
     logger.info(
         "commentary_start ticker=%s price=%.2f trigger=%s",
-        ticker, current_price, _trigger,
+        ticker,
+        current_price,
+        _trigger,
     )
     audio = None
     audio_duration = None
@@ -575,11 +375,7 @@ if need_commentary:
     # commentary. Tiny ticks and interval refreshes reuse the prefetched line.
     _significant_move = is_significant_move(price_changed, live_move_pct, _LIVE_PREFETCH_TOL)
     _pf_key = prefetch_key(ticker, period, interval, voice, speed, personality)
-    _pf = (
-        prefetch.take(_pf_key)
-        if (_LIVE_PREFETCH and live and not _significant_move)
-        else None
-    )
+    _pf = prefetch.take(_pf_key) if (_LIVE_PREFETCH and live and not _significant_move) else None
 
     if _pf is not None:
         commentary, audio, audio_duration = _pf
@@ -636,14 +432,13 @@ if need_commentary:
                 audio_duration += 0.75
                 if not audio_chunks:
                     logger.warning("TTS produced no audio ticker=%s voice=%s", ticker, voice)
-                audio = (
-                    pcm_chunks_to_wav(audio_chunks)
-                    if audio_chunks
-                    else None
-                )
+                audio = pcm_chunks_to_wav(audio_chunks) if audio_chunks else None
                 logger.info(
                     "audio_synthesized ticker=%s duration=%.1fs chunks=%d streamed=%s",
-                    ticker, audio_duration, len(audio_chunks), _streamed,
+                    ticker,
+                    audio_duration,
+                    len(audio_chunks),
+                    _streamed,
                 )
                 st.session_state["audio_duration"] = (
                     audio_duration if audio else float(refresh_interval)
@@ -683,9 +478,7 @@ elif st.session_state["commentary_history"]:
     if audio:
         _render_audio(audio)
 else:
-    st.info(
-        "Toggle **LIVE MODE** or click **Single update now** to start the commentator."
-    )
+    st.info("Toggle **LIVE MODE** or click **Single update now** to start the commentator.")
 
 _history = st.session_state["commentary_history"]
 if len(_history) > 1:
@@ -720,7 +513,7 @@ if live:
             text = generate_commentary(
                 _analysis, ticker, _name, previous_commentary=_hist, personality=_persona
             )
-            wav, dur = _audio_bundle(text, voice, speed)
+            wav, dur = synthesize_wav(text, voice, speed)
             return text, wav, dur
 
         prefetch.start(_next_key, _prefetch_worker)

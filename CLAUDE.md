@@ -21,15 +21,19 @@ build is GPU-enabled (targets gfx1100; override `AMDGPU_TARGETS`). Plain
 
 Pipeline: `User Input → yfinance → pandas analysis → llama.cpp commentary → llama.cpp Orpheus tokens → SNAC decode → Streamlit playback`
 
-- **`app.py`** — Streamlit UI. `.env` is loaded by `commentator/__init__.py` on first import. Has "Live Mode" that auto-refreshes on a timer (`time.sleep` + `st.rerun`). Regenerates commentary when price changes, the refresh interval elapses, live mode just started, or a manual update is forced. Refresh waits for audio to finish before rerunning.
+- **`app.py`** — Streamlit UI shell. `.env` is loaded by `commentator/__init__.py` on first import. Has "Live Mode" that auto-refreshes on a timer (`time.sleep` + `st.rerun`). Regenerates commentary when price changes, the refresh interval elapses, live mode just started, or a manual update is forced. Refresh waits for audio to finish before rerunning.
 - **`commentator/data.py`** — yfinance wrapper. Returns DataFrames or empty on failure. Logs errors via `logging`.
 - **`commentator/analysis.py`** — Technical analysis on raw OHLCV data: trend direction, RSI(14), SMA 20/50 crossovers, ATR volatility, volume trend. Returns `AnalysisResult` on success or `AnalysisError` on failure (both TypedDicts).
 - **`commentator/commentary.py`** — Builds a system+user prompt and calls llama.cpp (GGUF; default model Qwen3.5-4B). Selectable commentator personality (15: `sports`, `neutral`, `kramer`, `seinfeld`, `attenborough`, `wsb`, `noir`, `educator`, `gordon_ramsay`, `pirate`, `shakespeare`, `surfer`, `doomer`, `bob_ross`, `zen` — via `COMMENTARY_PERSONALITY` / the `personality=` arg / `available_personalities()`); a shared rule block is combined with a per-persona voice. Each persona has a default Orpheus voice (`default_voice_for()`); `neutral`/`educator`/`zen` skip emotion tags. Feeds back up to 5 prior lines for variety. Injects Orpheus emotion tags (`<laugh>`/`<chuckle>`/`<sigh>`) probabilistically — except `neutral`, which gets none.
 - **`commentator/tts.py`** — Default ("orpheus") engine: generates Orpheus tokens via llama.cpp and decodes audio locally with SNAC (PyTorch). Token generation runs in a producer thread so SNAC decode overlaps it; yields 16-bit mono PCM @ 24 kHz. Dispatches to alternative engines when `TTS_ENGINE` is set.
+- **`commentator/llama_loader.py`** — Shared lazy GGUF loader (`LazyLlama` / `create_llama`) used by commentary + Orpheus TTS (download, flash-attn fallback, warmup).
 - **`commentator/tts_engines.py`** — Opt-in alternative engines (`chatterbox`, `kokoro`), lazy-imported. Conflicting deps → install separately (see `docs/tts_engines.md`).
 - **`commentator/audio_server.py`** — Local 127.0.0.1 streaming-WAV HTTP server (`STREAM_AUDIO=1`): feeds PCM chunks to the `<audio>` element as they decode for ~0.5 s time-to-first-audio; supports Range/seek (206) once a clip finishes.
+- **`commentator/playback.py`** — Pure audio playback helpers (WAV synth for prefetch, `<audio>` HTML builders).
+- **`commentator/charts.py`** — Plotly candlestick + TradingView embed builders (no Streamlit deps).
+- **`commentator/ui_html.py`** — Persona labels and commentary-card HTML.
 - **`commentator/prefetch.py`** — Background speculative generation of the next live update during playback (`LIVE_PREFETCH=1`).
-- **`commentator/_config.py`** — Typed env-var helpers (`env_int`, `env_float`, `parse_tensor_split`).
+- **`commentator/_config.py`** — Typed env-var helpers (`env_int`, `env_float`, `env_bool`, `env_abs_float`, `parse_tensor_split`).
 - **`.env.example`** — All configuration variables with defaults and comments.
 
 ## Key Gotchas

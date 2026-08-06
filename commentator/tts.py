@@ -13,17 +13,12 @@ from typing import Any, cast
 
 import numpy as np
 import torch
-from huggingface_hub import hf_hub_download
 from num2words import num2words
 from snac import SNAC
 
-from commentator._config import env_float, env_int, parse_tensor_split
+from commentator._config import env_bool, env_float, env_int, parse_tensor_split
+from commentator.llama_loader import LazyLlama
 from commentator.llama_lock import LLAMA_CPP_LOCK
-
-try:
-    from llama_cpp import Llama
-except ImportError:
-    Llama = None
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +102,7 @@ def numbers_to_speech(text: str) -> str:
         logger.warning("numbers_to_speech conversion failed; leaving text as-is")
     return text
 
+
 # Valid SNAC codebook range: 0 inclusive to 4096 exclusive (4096 entries).
 _SNAC_CODE_MAX = 4096
 
@@ -114,14 +110,13 @@ _SNAC_MODEL: SNAC | None = None
 _SNAC_DEVICE: torch.device | None = None
 # guards SNAC singleton init only; separate from LLAMA_CPP_LOCK (inference)
 _SNAC_INIT_LOCK = threading.Lock()
-_LLAMA_MODEL: "Llama | None" = None
 
-_ORPHEUS_TTS_DEBUG = os.getenv("ORPHEUS_TTS_DEBUG", "0") == "1"
+_ORPHEUS_TTS_DEBUG = env_bool("ORPHEUS_TTS_DEBUG", False)
 # Warm up the LLM kernels and the SNAC decoder when the Orpheus model loads,
 # instead of paying that cost (HIP kernel JIT + SNAC load/download) during the
 # first user-visible TTS generation — which otherwise stalls the audio stream
 # right as the first chunk should be decoded. Set ORPHEUS_TTS_WARMUP=0 to skip.
-_ORPHEUS_TTS_WARMUP = os.getenv("ORPHEUS_TTS_WARMUP", "1") == "1"
+_ORPHEUS_TTS_WARMUP = env_bool("ORPHEUS_TTS_WARMUP", True)
 
 # TTS engine selector. "orpheus" (default) is the built-in llama.cpp + SNAC
 # pipeline. "chatterbox" and "kokoro" are optional alternative engines (see
@@ -142,7 +137,7 @@ _LLAMA_TENSOR_SPLIT = parse_tensor_split("ORPHEUS_LLAMA_TENSOR_SPLIT")
 # Flash attention speeds the long (up to 2048-token) audio-token decode and
 # halves KV-cache memory. Supported on the target gfx1100 GPU; disable
 # (ORPHEUS_LLAMA_FLASH_ATTN=0) if a llama.cpp build lacks FA kernels.
-_LLAMA_FLASH_ATTN = os.getenv("ORPHEUS_LLAMA_FLASH_ATTN", "1") == "1"
+_LLAMA_FLASH_ATTN = env_bool("ORPHEUS_LLAMA_FLASH_ATTN", True)
 
 
 def _format_prompt(text: str, voice: str) -> str:
@@ -160,9 +155,7 @@ def _speed_to_generation(speed: float) -> dict[str, float]:
     token count.
     """
     if not (0.8 <= speed <= 1.4):
-        logger.warning(
-            "_speed_to_generation: speed %.2f is outside [0.8, 1.4]; clamping", speed
-        )
+        logger.warning("_speed_to_generation: speed %.2f is outside [0.8, 1.4]; clamping", speed)
     speed_norm = (speed - 0.8) / 0.6
     speed_norm = max(0.0, min(1.0, speed_norm))
     return {
@@ -193,9 +186,7 @@ def _get_snac_model() -> tuple[SNAC, torch.device]:
             return _SNAC_MODEL, _SNAC_DEVICE
         use_cuda = torch.cuda.is_available()
         device = torch.device("cuda" if use_cuda else "cpu")
-        logger.info(
-            "Loading SNAC model on %s (cuda_available=%s)", device, use_cuda
-        )
+        logger.info("Loading SNAC model on %s (cuda_available=%s)", device, use_cuda)
         t0 = time.time()
         model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(device)
         model.eval()
@@ -205,66 +196,34 @@ def _get_snac_model() -> tuple[SNAC, torch.device]:
     return _SNAC_MODEL, _SNAC_DEVICE
 
 
-def _get_llama_model() -> "Llama":
-    """Lazy-init the Orpheus TTS LLM singleton (thread-safe double-checked lock)."""
-    global _LLAMA_MODEL
-    if _LLAMA_MODEL is not None:
-        return _LLAMA_MODEL
-    if Llama is None:
-        raise RuntimeError("llama_cpp is not installed")
-    with LLAMA_CPP_LOCK:
-        if _LLAMA_MODEL is not None:
-            return _LLAMA_MODEL
-        logger.info("Downloading/locating Orpheus GGUF")
-        gguf_path = hf_hub_download(repo_id=_GGUF_REPO, filename=_GGUF_FILE)
-        logger.info(
-            "Loading Orpheus llama.cpp model (ctx=%d, gpu_layers=%d, main_gpu=%d)",
-            _LLAMA_CTX,
-            _LLAMA_GPU_LAYERS,
-            _LLAMA_MAIN_GPU,
-        )
-        t0 = time.time()
+def _warmup_orpheus_llm(model: Any) -> None:
+    # Warm the LLM decode kernels with a 1-token generation.
+    model(_format_prompt("warm up", "tara"), max_tokens=1)
+    # Load + warm SNAC now so its load (and possible first-run download) doesn't
+    # stall the audio stream mid-generation. Four zero-valued frames form a valid
+    # in-range batch the decoder accepts (28 tokens = 4 * 7).
+    _decode_frames_to_pcm([0] * (4 * 7))
 
-        def _load(flash_attn: bool) -> "Llama":
-            return Llama(
-                model_path=gguf_path,
-                n_ctx=_LLAMA_CTX,
-                n_gpu_layers=_LLAMA_GPU_LAYERS,
-                n_batch=_LLAMA_BATCH,
-                n_ubatch=_LLAMA_UBATCH,
-                flash_attn=flash_attn,
-                main_gpu=_LLAMA_MAIN_GPU,
-                tensor_split=_LLAMA_TENSOR_SPLIT,
-                verbose=_ORPHEUS_TTS_DEBUG,
-            )
 
-        try:
-            _LLAMA_MODEL = _load(_LLAMA_FLASH_ATTN)
-        except Exception:
-            if not _LLAMA_FLASH_ATTN:
-                raise
-            # Some llama.cpp builds lack flash-attention kernels and fail to load
-            # rather than silently falling back; retry once without it.
-            logger.warning(
-                "Orpheus model load with flash_attn failed; retrying without it",
-                exc_info=True,
-            )
-            _LLAMA_MODEL = _load(False)
-        logger.info("Orpheus llama.cpp model loaded in %.1fs", time.time() - t0)
-        if _ORPHEUS_TTS_WARMUP:
-            try:
-                tw = time.time()
-                # Warm the LLM decode kernels with a 1-token generation.
-                _LLAMA_MODEL(_format_prompt("warm up", "tara"), max_tokens=1)
-                # Load + warm SNAC now so its load (and possible first-run
-                # download) doesn't stall the audio stream mid-generation. Four
-                # zero-valued frames form a valid in-range batch the decoder
-                # accepts (28 tokens = 4 * 7).
-                _decode_frames_to_pcm([0] * (4 * 7))
-                logger.info("Orpheus warmup done in %.2fs", time.time() - tw)
-            except Exception:
-                logger.warning("Orpheus warmup failed (non-fatal)", exc_info=True)
-    return _LLAMA_MODEL
+_LLAMA_MODEL = LazyLlama(
+    label="Orpheus GGUF",
+    repo_id=_GGUF_REPO,
+    filename=_GGUF_FILE,
+    n_ctx=_LLAMA_CTX,
+    n_gpu_layers=_LLAMA_GPU_LAYERS,
+    n_batch=_LLAMA_BATCH,
+    n_ubatch=_LLAMA_UBATCH,
+    main_gpu=_LLAMA_MAIN_GPU,
+    tensor_split=_LLAMA_TENSOR_SPLIT,
+    flash_attn=_LLAMA_FLASH_ATTN,
+    verbose=_ORPHEUS_TTS_DEBUG,
+    warmup=_warmup_orpheus_llm if _ORPHEUS_TTS_WARMUP else None,
+)
+
+
+def _get_llama_model() -> Any:
+    """Lazy-init the Orpheus TTS LLM singleton (thread-safe)."""
+    return _LLAMA_MODEL.get()
 
 
 @torch.inference_mode()
@@ -303,7 +262,8 @@ def _decode_frames_to_pcm(frame_tokens: list[int]) -> bytes | None:
         if np.any(codes < 0) or np.any(codes >= _SNAC_CODE_MAX):
             logger.debug(
                 "_decode_frames_to_pcm: token out of codebook range [0, %d), dropping %d frames",
-                _SNAC_CODE_MAX, num_frames,
+                _SNAC_CODE_MAX,
+                num_frames,
             )
             return None
 
@@ -333,7 +293,7 @@ def _iter_custom_tokens_from_text_stream(
                     buffer = buffer[-128:]
                 break
             yield int(match.group(1))
-            buffer = buffer[match.end():]
+            buffer = buffer[match.end() :]
 
 
 def _stream_custom_tokens(
@@ -371,8 +331,7 @@ def _stream_custom_tokens(
                     stream=True,
                 )
                 text_stream = (
-                    str(cast(dict[str, Any], item)["choices"][0]["text"])
-                    for item in stream
+                    str(cast(dict[str, Any], item)["choices"][0]["text"]) for item in stream
                 )
                 for tok in _iter_custom_tokens_from_text_stream(text_stream):
                     if stop_event.is_set():
@@ -425,15 +384,11 @@ def iter_audio_chunks(
 
         return _engine_chunks(TTS_ENGINE, text, voice, speed)
     if voice not in VALID_VOICES:
-        raise ValueError(
-            f"Unknown voice {voice!r}. Valid voices: {sorted(VALID_VOICES)}"
-        )
+        raise ValueError(f"Unknown voice {voice!r}. Valid voices: {sorted(VALID_VOICES)}")
     return _iter_audio_chunks_gen(text, voice, speed)
 
 
-def _iter_audio_chunks_gen(
-    text: str, voice: str, speed: float
-) -> Generator[bytes, None, None]:
+def _iter_audio_chunks_gen(text: str, voice: str, speed: float) -> Generator[bytes, None, None]:
     """Internal generator that yields PCM chunks. Voice must be pre-validated."""
     logger.info("tts_start voice=%s speed=%.2f text_len=%d", voice, speed, len(text))
     start_time = time.time()
@@ -500,17 +455,19 @@ def _iter_audio_chunks_gen(
     if dropped_chunks:
         logger.warning(
             "TTS dropped %d frame batch(es) due to invalid token ranges voice=%s",
-            dropped_chunks, voice,
+            dropped_chunks,
+            voice,
         )
     logger.info(
         "TTS complete voice=%s elapsed=%.2fs tokens=%d dropped_batches=%d",
-        voice, time.time() - start_time, total_tokens, dropped_chunks,
+        voice,
+        time.time() - start_time,
+        total_tokens,
+        dropped_chunks,
     )
 
 
-def text_to_speech(
-    text: str, voice: str = "zac", speed: float = 1.3
-) -> bytes | None:
+def text_to_speech(text: str, voice: str = "zac", speed: float = 1.3) -> bytes | None:
     """Convert text to a WAV audio bytes object. Returns None if no audio was generated.
 
     Raises ValueError for unknown voice names. Valid voices: VALID_VOICES.
@@ -522,9 +479,7 @@ def text_to_speech(
     return pcm_chunks_to_wav(chunks)
 
 
-def pcm_chunks_to_wav(
-    chunks: Iterable[bytes], sample_rate: int = SAMPLE_RATE
-) -> bytes:
+def pcm_chunks_to_wav(chunks: Iterable[bytes], sample_rate: int = SAMPLE_RATE) -> bytes:
     """Assemble raw 16-bit mono PCM chunks into a WAV file in memory."""
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
