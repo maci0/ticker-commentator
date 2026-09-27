@@ -57,10 +57,7 @@ def should_refresh(
 ) -> bool:
     """Whether to refetch data this run."""
     return bool(
-        force
-        or live_just_started
-        or interval_elapsed
-        or (not live and data_params_changed)
+        force or live_just_started or interval_elapsed or (not live and data_params_changed)
     )
 
 

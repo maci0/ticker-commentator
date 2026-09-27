@@ -5,6 +5,9 @@ import os
 
 logger = logging.getLogger(__name__)
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off", ""})
+
 
 def env_int(name: str, default: int) -> int:
     """Parse an integer env var, falling back to default on invalid input."""
@@ -22,6 +25,30 @@ def env_float(name: str, default: float) -> float:
     except ValueError:
         logger.warning("%s has an invalid value; using default %g", name, default)
         return default
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """Parse a boolean env var.
+
+    Truthy: ``1``, ``true``, ``yes``, ``on`` (case-insensitive).
+    Falsy: ``0``, ``false``, ``no``, ``off``, empty string.
+    Unset uses ``default``; any other value logs a warning and uses ``default``.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    logger.warning("%s has an invalid boolean value %r; using default %s", name, raw, default)
+    return default
+
+
+def env_abs_float(name: str, default: float) -> float:
+    """Parse a float env var and return its absolute value (falls back on invalid)."""
+    return abs(env_float(name, default))
 
 
 def parse_tensor_split(env_var: str) -> list[float]:

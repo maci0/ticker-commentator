@@ -2,7 +2,7 @@
 
 import pytest
 
-from commentator._config import env_float, env_int, parse_tensor_split
+from commentator._config import env_abs_float, env_bool, env_float, env_int, parse_tensor_split
 
 # ── env_int ─────────────────────────────────────────────────────────
 
@@ -101,3 +101,43 @@ def test_parse_tensor_split_single_value(monkeypatch) -> None:
 def test_parse_tensor_split_strips_whitespace(monkeypatch) -> None:
     monkeypatch.setenv("_TEST_TENSOR", " 0.3 , 0.7 ")
     assert parse_tensor_split("_TEST_TENSOR") == pytest.approx([0.3, 0.7])
+
+
+# ── env_bool ───────────────────────────────────────────────────────────
+
+
+def test_env_bool_default_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("_TEST_ENV_BOOL", raising=False)
+    assert env_bool("_TEST_ENV_BOOL", True) is True
+    assert env_bool("_TEST_ENV_BOOL", False) is False
+
+
+def test_env_bool_truthy_values(monkeypatch) -> None:
+    for raw in ("1", "true", "TRUE", "yes", "on", " On "):
+        monkeypatch.setenv("_TEST_ENV_BOOL", raw)
+        assert env_bool("_TEST_ENV_BOOL", False) is True
+
+
+def test_env_bool_falsy_values(monkeypatch) -> None:
+    for raw in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("_TEST_ENV_BOOL", raw)
+        assert env_bool("_TEST_ENV_BOOL", True) is False
+
+
+def test_env_bool_invalid_falls_back(monkeypatch) -> None:
+    monkeypatch.setenv("_TEST_ENV_BOOL", "maybe")
+    assert env_bool("_TEST_ENV_BOOL", True) is True
+    assert env_bool("_TEST_ENV_BOOL", False) is False
+
+
+# ── env_abs_float ──────────────────────────────────────────────────────
+
+
+def test_env_abs_float_negative_becomes_positive(monkeypatch) -> None:
+    monkeypatch.setenv("_TEST_ABS", "-0.05")
+    assert env_abs_float("_TEST_ABS", 1.0) == pytest.approx(0.05)
+
+
+def test_env_abs_float_invalid_uses_abs_default(monkeypatch) -> None:
+    monkeypatch.setenv("_TEST_ABS", "nope")
+    assert env_abs_float("_TEST_ABS", -0.1) == pytest.approx(0.1)

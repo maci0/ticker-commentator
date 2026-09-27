@@ -104,41 +104,57 @@ def test_prefetch_key_differs_by_personality() -> None:
 
 def test_should_refresh_force() -> None:
     assert should_refresh(
-        force=True, live=False, live_just_started=False,
-        interval_elapsed=False, data_params_changed=False,
+        force=True,
+        live=False,
+        live_just_started=False,
+        interval_elapsed=False,
+        data_params_changed=False,
     )
 
 
 def test_should_refresh_static_only_on_data_change() -> None:
     assert not should_refresh(
-        force=False, live=False, live_just_started=False,
-        interval_elapsed=False, data_params_changed=False,
+        force=False,
+        live=False,
+        live_just_started=False,
+        interval_elapsed=False,
+        data_params_changed=False,
     )
     assert should_refresh(
-        force=False, live=False, live_just_started=False,
-        interval_elapsed=False, data_params_changed=True,
+        force=False,
+        live=False,
+        live_just_started=False,
+        interval_elapsed=False,
+        data_params_changed=True,
     )
 
 
 def test_should_comment_needs_live_or_force() -> None:
     # price change alone (not live, not forced) does not comment
     assert not should_comment(
-        force=False, live=False, price_changed=True,
-        live_just_started=False, interval_elapsed=False,
+        force=False,
+        live=False,
+        price_changed=True,
+        live_just_started=False,
+        interval_elapsed=False,
     )
     assert should_comment(
-        force=False, live=True, price_changed=True,
-        live_just_started=False, interval_elapsed=False,
+        force=False,
+        live=True,
+        price_changed=True,
+        live_just_started=False,
+        interval_elapsed=False,
     )
     assert should_comment(
-        force=True, live=False, price_changed=False,
-        live_just_started=False, interval_elapsed=False,
+        force=True,
+        live=False,
+        price_changed=False,
+        live_just_started=False,
+        interval_elapsed=False,
     )
 
 
-@given(
-    a=st.booleans(), b=st.booleans(), c=st.booleans(), d=st.booleans(), e=st.booleans()
-)
+@given(a=st.booleans(), b=st.booleans(), c=st.booleans(), d=st.booleans(), e=st.booleans())
 def test_decision_helpers_return_bool(a, b, c, d, e) -> None:
     assert isinstance(
         should_refresh(
@@ -147,8 +163,6 @@ def test_decision_helpers_return_bool(a, b, c, d, e) -> None:
         bool,
     )
     assert isinstance(
-        should_comment(
-            force=a, live=b, price_changed=c, live_just_started=d, interval_elapsed=e
-        ),
+        should_comment(force=a, live=b, price_changed=c, live_just_started=d, interval_elapsed=e),
         bool,
     )

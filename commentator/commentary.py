@@ -7,16 +7,10 @@ import re
 import time
 from typing import Any
 
-from huggingface_hub import hf_hub_download
-
-from commentator._config import env_float, env_int, parse_tensor_split
+from commentator._config import env_bool, env_float, env_int, parse_tensor_split
 from commentator.analysis import AnalysisResult
+from commentator.llama_loader import LazyLlama
 from commentator.llama_lock import LLAMA_CPP_LOCK
-
-try:
-    from llama_cpp import Llama
-except ImportError:
-    Llama = None
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +47,7 @@ _PERSONAS: dict[str, str] = {
         " reactions mixed with real trading lingo (support, resistance, breakout,"
         " pullback, squeeze, rally, selloff). Frame buyers and sellers as rival"
         " teams battling it out — bulls smashing resistance, bears defending"
-        ' support. Natural spoken style with contractions and exclamations. Never'
+        " support. Natural spoken style with contractions and exclamations. Never"
         ' say "folks" or "ladies and gentlemen".'
     ),
     "neutral": (
@@ -170,36 +164,21 @@ def default_speed_for(personality: str) -> float:
 # quality far more than rules alone: it pins the voice, the one-sentence length,
 # and the digit-number style. Each uses $312.07 / 1.2% to model the number form.
 _PERSONA_EXAMPLES: dict[str, str] = {
-    "sports":
-        "Bulls storm the gates as Apple rips through resistance to $312.07 on heavy volume!",
-    "neutral":
-        "Apple is up 1.2% to $312.07 on above-average volume, holding above its averages.",
-    "kramer":
-        "Apple's on fire at $312.07 — that's a buy buy buy as the bulls take the floor!",
-    "seinfeld":
-        "What's the deal with Apple at $312.07? Up 1.2% like it's doing us a favor.",
-    "attenborough":
-        "Here we observe Apple gliding to $312.07 as the herd of bulls grazes on volume.",
-    "wsb":
-        "Apple ripping to $312.07, diamond hands only, this rocket isn't stopping!",
-    "noir":
-        "Apple slunk in at $312.07, down 1.2% — the kind of number that means trouble.",
-    "educator":
-        "Apple's RSI near 68 means it's nearing overbought while price holds $312.07.",
-    "gordon_ramsay":
-        "This Apple chart at $312.07 is a disaster — the bulls have overcooked it!",
-    "pirate":
-        "Arr, Apple be sailin' to $312.07 with the wind at her back and a full hold!",
-    "shakespeare":
-        "Lo, Apple doth ascend to $312.07, as bulls and bears wage eternal war below.",
-    "surfer":
-        "Whoa, Apple's totally pumping to $312.07, riding a gnarly wave of volume, dude.",
-    "doomer":
-        "Apple's fragile climb to $312.07 is just the calm before the inevitable collapse.",
-    "bob_ross":
-        "Apple drifts up to a happy little $312.07 — no mistakes here, just gentle gains.",
-    "zen":
-        "Apple rests at $312.07; the market rises and falls, and we simply observe.",
+    "sports": "Bulls storm the gates as Apple rips through resistance to $312.07 on heavy volume!",
+    "neutral": "Apple is up 1.2% to $312.07 on above-average volume, holding above its averages.",
+    "kramer": "Apple's on fire at $312.07 — that's a buy buy buy as the bulls take the floor!",
+    "seinfeld": "What's the deal with Apple at $312.07? Up 1.2% like it's doing us a favor.",
+    "attenborough": "Here we observe Apple gliding to $312.07 as bulls graze on volume.",
+    "wsb": "Apple ripping to $312.07, diamond hands only, this rocket isn't stopping!",
+    "noir": "Apple slunk in at $312.07, down 1.2% — the kind of number that means trouble.",
+    "educator": "Apple's RSI near 68 means it's nearing overbought while price holds $312.07.",
+    "gordon_ramsay": "This Apple chart at $312.07 is a disaster — the bulls have overcooked it!",
+    "pirate": "Arr, Apple be sailin' to $312.07 with the wind at her back and a full hold!",
+    "shakespeare": "Lo, Apple doth ascend to $312.07, as bulls and bears wage eternal war below.",
+    "surfer": "Whoa, Apple's totally pumping to $312.07, riding a gnarly wave of volume, dude.",
+    "doomer": "Apple's fragile climb to $312.07 is just the calm before the inevitable collapse.",
+    "bob_ross": "Apple drifts up to a happy little $312.07 — no mistakes here, just gentle gains.",
+    "zen": "Apple rests at $312.07; the market rises and falls, and we simply observe.",
 }
 
 
@@ -217,12 +196,9 @@ def available_personalities() -> list[str]:
     """Sorted list of selectable commentator personalities."""
     return sorted(_PERSONAS)
 
-_COMMENTARY_GGUF_REPO = os.getenv(
-    "COMMENTARY_GGUF_REPO", "unsloth/Qwen3.5-4B-GGUF"
-)
-_COMMENTARY_GGUF_FILE = os.getenv(
-    "COMMENTARY_GGUF_FILE", "Qwen3.5-4B-Q8_0.gguf"
-)
+
+_COMMENTARY_GGUF_REPO = os.getenv("COMMENTARY_GGUF_REPO", "unsloth/Qwen3.5-4B-GGUF")
+_COMMENTARY_GGUF_FILE = os.getenv("COMMENTARY_GGUF_FILE", "Qwen3.5-4B-Q8_0.gguf")
 _COMMENTARY_CTX = env_int("COMMENTARY_CTX", 4096)
 # llama.cpp's default n_batch is 512; the previous 64 throttled prompt prefill
 # (system prompt + stats + up to 5 history lines) for no benefit on GPU.
@@ -233,11 +209,11 @@ _COMMENTARY_MAIN_GPU = env_int("COMMENTARY_MAIN_GPU", 0)
 _COMMENTARY_TENSOR_SPLIT = parse_tensor_split("COMMENTARY_TENSOR_SPLIT")
 # Flash attention speeds attention and halves KV-cache memory. Supported on the
 # target gfx1100 GPU; disable (COMMENTARY_FLASH_ATTN=0) if the build lacks FA.
-_COMMENTARY_FLASH_ATTN = os.getenv("COMMENTARY_FLASH_ATTN", "1") == "1"
-_COMMENTARY_DEBUG = os.getenv("COMMENTARY_DEBUG", "0") == "1"
+_COMMENTARY_FLASH_ATTN = env_bool("COMMENTARY_FLASH_ATTN", True)
+_COMMENTARY_DEBUG = env_bool("COMMENTARY_DEBUG", False)
 # Warm the LLM kernels at load so the first commentary doesn't pay HIP kernel
 # JIT cost during generation. Set COMMENTARY_WARMUP=0 to skip.
-_COMMENTARY_WARMUP = os.getenv("COMMENTARY_WARMUP", "1") == "1"
+_COMMENTARY_WARMUP = env_bool("COMMENTARY_WARMUP", True)
 # Probability values are clamped to [0.0, 1.0] so out-of-range config never
 # causes always-on or always-off tag injection.
 # Defaults lowered (was 0.75/0.50) after measuring that emotion tags degrade
@@ -276,7 +252,7 @@ def _max_similarity(text: str, recent: list[str]) -> float:
         overlap = len(words & other) / len(words | other)
         best = max(best, overlap)
     return best
-_COMMENTARY_LLM: "Llama | None" = None
+
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _FOLKS_RE = re.compile(r"\b[Ff]olks\b[,!]?\s*")
@@ -298,65 +274,29 @@ def _first_sentence(text: str) -> str:
     return parts[0].strip() if parts else text
 
 
-def _get_commentary_llm() -> "Llama":
-    """Lazy-init the commentary LLM singleton (thread-safe double-checked lock)."""
-    global _COMMENTARY_LLM
-    if _COMMENTARY_LLM is not None:
-        return _COMMENTARY_LLM
-    if Llama is None:
-        raise RuntimeError("llama_cpp is not installed")
-    with LLAMA_CPP_LOCK:
-        if _COMMENTARY_LLM is not None:
-            return _COMMENTARY_LLM
-        gguf_path = hf_hub_download(
-            repo_id=_COMMENTARY_GGUF_REPO,
-            filename=_COMMENTARY_GGUF_FILE,
-        )
-        logger.info(
-            "Loading commentary GGUF: %s (ctx=%d, gpu_layers=%d, main_gpu=%d)",
-            gguf_path,
-            _COMMENTARY_CTX,
-            _COMMENTARY_GPU_LAYERS,
-            _COMMENTARY_MAIN_GPU,
-        )
-        t0 = time.time()
+def _warmup_commentary_llm(model: Any) -> None:
+    model.create_chat_completion(messages=[{"role": "user", "content": "hi"}], max_tokens=1)
 
-        def _load(flash_attn: bool) -> "Llama":
-            return Llama(
-                model_path=gguf_path,
-                n_ctx=_COMMENTARY_CTX,
-                n_gpu_layers=_COMMENTARY_GPU_LAYERS,
-                n_batch=_COMMENTARY_BATCH,
-                n_ubatch=_COMMENTARY_UBATCH,
-                flash_attn=flash_attn,
-                main_gpu=_COMMENTARY_MAIN_GPU,
-                tensor_split=_COMMENTARY_TENSOR_SPLIT,
-                verbose=_COMMENTARY_DEBUG,
-            )
 
-        try:
-            _COMMENTARY_LLM = _load(_COMMENTARY_FLASH_ATTN)
-        except Exception:
-            if not _COMMENTARY_FLASH_ATTN:
-                raise
-            # Some llama.cpp builds lack flash-attention kernels and fail to load
-            # rather than silently falling back; retry once without it.
-            logger.warning(
-                "Commentary model load with flash_attn failed; retrying without it",
-                exc_info=True,
-            )
-            _COMMENTARY_LLM = _load(False)
-        logger.info("Commentary GGUF loaded in %.1fs", time.time() - t0)
-        if _COMMENTARY_WARMUP:
-            try:
-                tw = time.time()
-                _COMMENTARY_LLM.create_chat_completion(
-                    messages=[{"role": "user", "content": "hi"}], max_tokens=1
-                )
-                logger.info("Commentary warmup done in %.2fs", time.time() - tw)
-            except Exception:
-                logger.warning("Commentary warmup failed (non-fatal)", exc_info=True)
-    return _COMMENTARY_LLM
+_COMMENTARY_LLM = LazyLlama(
+    label="Commentary GGUF",
+    repo_id=_COMMENTARY_GGUF_REPO,
+    filename=_COMMENTARY_GGUF_FILE,
+    n_ctx=_COMMENTARY_CTX,
+    n_gpu_layers=_COMMENTARY_GPU_LAYERS,
+    n_batch=_COMMENTARY_BATCH,
+    n_ubatch=_COMMENTARY_UBATCH,
+    main_gpu=_COMMENTARY_MAIN_GPU,
+    tensor_split=_COMMENTARY_TENSOR_SPLIT,
+    flash_attn=_COMMENTARY_FLASH_ATTN,
+    verbose=_COMMENTARY_DEBUG,
+    warmup=_warmup_commentary_llm if _COMMENTARY_WARMUP else None,
+)
+
+
+def _get_commentary_llm() -> Any:
+    """Lazy-init the commentary LLM singleton (thread-safe)."""
+    return _COMMENTARY_LLM.get()
 
 
 def _generate_with_llama_cpp(user_prompt: str, system_prompt: str) -> str:
@@ -502,7 +442,9 @@ def generate_commentary(
             "generate_commentary: partial live_move args provided "
             "(live_move=%r, live_move_pct=%r, live_direction=%r); "
             "falling back to opening-commentary prompt",
-            live_move, live_move_pct, live_direction,
+            live_move,
+            live_move_pct,
+            live_direction,
         )
 
     trend = analysis.get("trend", "sideways")
@@ -544,7 +486,7 @@ def generate_commentary(
 
     if previous_commentary:
         recent = previous_commentary[-5:]
-        numbered = "\n".join(f"  {i+1}. {line}" for i, line in enumerate(recent))
+        numbered = "\n".join(f"  {i + 1}. {line}" for i, line in enumerate(recent))
         user_prompt += (
             "\n- Prior commentary (don't repeat these phrases,"
             f" ignore any stock names in them):\n{numbered}"

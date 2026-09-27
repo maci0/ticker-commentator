@@ -43,9 +43,7 @@ from commentator.tts import (
 def test_parse_range_never_crashes(header: str, total: int) -> None:
     out = audio_server._parse_range(header, total)
     assert out is None or (
-        isinstance(out, tuple)
-        and len(out) == 2
-        and all(isinstance(x, int) for x in out)
+        isinstance(out, tuple) and len(out) == 2 and all(isinstance(x, int) for x in out)
     )
 
 
@@ -94,11 +92,7 @@ def test_complete_wav_roundtrip_length(sr: int, pcm: bytes) -> None:
 # ── tts_engines._float_to_pcm16 ──────────────────────────────────────
 
 
-@given(
-    audio=st.lists(
-        st.floats(allow_nan=True, allow_infinity=True, width=32), max_size=512
-    )
-)
+@given(audio=st.lists(st.floats(allow_nan=True, allow_infinity=True, width=32), max_size=512))
 def test_float_to_pcm16_handles_any_floats(audio: list) -> None:
     arr = np.array(audio, dtype=np.float32)
     out = tts_engines._float_to_pcm16(arr)
@@ -186,9 +180,7 @@ _sentiment = st.fixed_dictionaries(
 
 
 @given(text=st.text(max_size=120), analysis=_sentiment)
-def test_inject_emotion_tags_never_crashes_and_only_known_tags(
-    text: str, analysis: dict
-) -> None:
+def test_inject_emotion_tags_never_crashes_and_only_known_tags(text: str, analysis: dict) -> None:
     out = _inject_emotion_tags(text, analysis)
     assert isinstance(out, str)
     # Any emotion tag in the output must come from the pruned pool the tuning

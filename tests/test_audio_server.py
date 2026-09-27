@@ -38,9 +38,9 @@ def test_streaming_wav_header_is_valid() -> None:
     assert len(hdr) == 44
     assert hdr[:4] == b"RIFF" and hdr[8:12] == b"WAVE"
     assert hdr[12:16] == b"fmt " and hdr[36:40] == b"data"
-    channels, = struct.unpack("<H", hdr[22:24])
-    rate, = struct.unpack("<I", hdr[24:28])
-    bits, = struct.unpack("<H", hdr[34:36])
+    (channels,) = struct.unpack("<H", hdr[22:24])
+    (rate,) = struct.unpack("<I", hdr[24:28])
+    (bits,) = struct.unpack("<H", hdr[34:36])
     assert (channels, rate, bits) == (1, 24000, 16)
 
 
@@ -104,9 +104,7 @@ def test_finished_clip_full_get_has_correct_length() -> None:
 def test_range_request_returns_206_slice() -> None:
     port, sid, full = _make_completed_stream([b"\x10\x20" * 200])
     total = len(full)
-    status, body, cr, accept = _get(
-        port, f"/audio/{sid}.wav", {"Range": "bytes=100-199"}
-    )
+    status, body, cr, accept = _get(port, f"/audio/{sid}.wav", {"Range": "bytes=100-199"})
     assert status == 206
     assert body == full[100:200]
     assert cr == f"bytes 100-199/{total}"
