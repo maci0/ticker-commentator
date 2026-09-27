@@ -26,11 +26,11 @@ dependencies = [
     "setuptools>=83",
 ]
 
-[project.optional-dependencies]
-# Qwen3-TTS engine (TTS_ENGINE=qwen). Opt-in: `uv sync --extra qwen`. It only
-# adds transformers/accelerate (which the project core doesn't otherwise use),
-# so it coexists in the main env — no separate venv needed.
-qwen = ["qwen-tts>=0.1.1"]
+# The Qwen3-TTS engine (TTS_ENGINE=qwen) is deliberately NOT an extra: every
+# qwen-tts release pins `transformers==4.57.3`, and transformers 4.57.3 requires
+# `huggingface-hub>=0.34.0,<1.0` — which makes the graph unsatisfiable against
+# the project's `huggingface-hub>=1.x` (upstream git pins the same). Install it
+# into its own venv instead, like chatterbox/kokoro (docs/tts_engines.md).
 
 [dependency-groups]
 dev = [

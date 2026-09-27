@@ -72,8 +72,8 @@ def test_missing_kokoro_gives_install_hint() -> None:
 
 
 def test_missing_qwen_gives_install_hint() -> None:
-    # qwen-tts is an in-project extra (uv sync --extra qwen); only the
-    # not-installed path raises the hint, so skip when it is present.
+    # qwen-tts lives in its own venv (docs/tts_engines.md), so it is normally
+    # absent here; only the not-installed path raises the hint.
     try:
         import qwen_tts  # noqa: F401
     except ImportError:

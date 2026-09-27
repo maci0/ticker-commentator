@@ -124,8 +124,9 @@ def _get_qwen() -> object:
         from qwen_tts import Qwen3TTSModel
     except ImportError as exc:
         raise RuntimeError(
-            "TTS_ENGINE=qwen needs the 'qwen-tts' package. It coexists in the main "
-            "env (no separate venv): run `uv sync --extra qwen`."
+            "TTS_ENGINE=qwen needs the 'qwen-tts' package, which pins "
+            "transformers==4.57.3 and so cannot join the project env: install it "
+            "into its own venv (see docs/tts_engines.md)."
         ) from exc
     repo = os.getenv("QWEN_TTS_REPO", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
     use_cuda = torch.cuda.is_available()

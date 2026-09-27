@@ -4,11 +4,11 @@ The app supports three text-to-speech engines, selected with the `TTS_ENGINE`
 env var. **Orpheus** is the default and the only one installed by the project's
 `uv sync` — it is the fastest and keeps the emotion-tag gimmick.
 
-`chatterbox` and `kokoro` are **opt-in alternatives**. They are *not* in
-`pyproject.toml` on purpose: each pins torch/transformers versions that conflict
-with the project (and with each other), so adding them as extras would break
-`uv sync`/`uv lock`. Install the one you want into its **own venv** and run the
-app from there.
+`chatterbox`, `kokoro`, and `qwen` are **opt-in alternatives**. They are *not*
+in `pyproject.toml` on purpose: each pins torch/transformers versions that
+conflict with the project (and with each other), so adding them as extras would
+break `uv sync`/`uv lock`. Install the one you want into its **own venv** and run
+the app from there.
 
 ## Benchmark (RX 7900 XTX, gfx1100; one sports-commentary line)
 
@@ -63,13 +63,16 @@ Open weights from Alibaba (https://github.com/QwenLM/Qwen3-TTS). Runs on ROCm;
 24 kHz output, 9 named speakers, 8 languages, plus a natural-language `instruct`
 style control. Heavy (1.7B, slow: cold RTF ~5 on the 7900 XTX).
 
-Unlike chatterbox/kokoro, qwen-tts **coexists in the main env** — it only adds
-transformers/accelerate, which the project core doesn't use, so torch and the
-HIP llama.cpp build are untouched. Just enable the extra:
+Like chatterbox/kokoro, qwen-tts conflicts with the project env: every release
+pins `transformers==4.57.3`, which requires `huggingface-hub<1.0` and so cannot
+be resolved together with the project's `huggingface-hub>=1.x`. Install it into
+its own venv:
 
 ```bash
-uv sync --extra qwen
-TTS_ENGINE=qwen HIP_VISIBLE_DEVICES=0 uv run streamlit run app.py
+uv venv /opt/tts-qwen --python 3.12
+# CPU torch unless you add the ROCm index from setup.sh
+uv pip install --python /opt/tts-qwen -e . qwen-tts
+TTS_ENGINE=qwen HIP_VISIBLE_DEVICES=0 /opt/tts-qwen/bin/python -m streamlit run app.py
 ```
 
 Tunables: `QWEN_TTS_REPO` (default `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`),
