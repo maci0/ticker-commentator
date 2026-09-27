@@ -1,3 +1,10 @@
+# The uv updater sees the whole project graph, so a dependency that cannot
+# resolve fails the run for every package in it. Two constraints have to hold
+# on main for that reason: the `qwen` extra is intentionally gone (every
+# qwen-tts release pins transformers==4.57.3, and transformers only admits
+# huggingface-hub 1.x from 5.0, which qwen-tts cannot use — that engine
+# installs into its own venv instead), and the lock has to stay resolvable for
+# the newest huggingface-hub the updater proposes.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
