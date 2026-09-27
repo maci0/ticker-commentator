@@ -48,11 +48,17 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
+      # Install into the project venv (`.venv`), never the runner's system
+      # Python: Debian/Ubuntu marks /usr as externally managed (PEP 668), so
+      # `--system` installs are rejected.
+      - name: Create project virtualenv
+        run: uv venv --python 3.12
+
       # Install CPU torch before other deps to avoid ROCm/HIP resolution on
       # standard runners. Tests mock all GPU calls so any recent torch works.
       - name: Install CPU torch
         run: |
-          uv pip install --system torch torchaudio torchvision \
+          uv pip install torch torchaudio torchvision \
             --index-url https://download.pytorch.org/whl/cpu
 
       # Install remaining deps from lockfile, skipping ROCm-only packages
@@ -62,15 +68,16 @@ jobs:
           uv export --all-groups --no-hashes --format requirements-txt \
             | grep -Eiv '^(torch|torchaudio|torchvision|triton)([-=<>! ]|$)' \
             > /tmp/ci-requirements.txt
-          uv pip install --system -r /tmp/ci-requirements.txt
+          uv pip install -r /tmp/ci-requirements.txt
           # Editable install so `import commentator` resolves (hatchling package).
-          uv pip install --system -e . --no-deps
+          uv pip install -e . --no-deps
 
       - name: Run tests
         env:
           HIP_VISIBLE_DEVICES: ""
           CUDA_VISIBLE_DEVICES: ""
-        run: pytest --tb=short --cov=commentator --cov-report=term-missing
+        # --no-sync: run in the CPU-torch venv built above, no re-resolution.
+        run: uv run --no-sync pytest --tb=short --cov=commentator --cov-report=term-missing
 
   audit:
     runs-on: ubuntu-24.04
