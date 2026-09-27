@@ -16,3 +16,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # The torch stack resolves from the pytorch-rocm index in
+      # [tool.uv.sources], which the updater cannot read: it records
+      # "torchvision ... dependency_file_not_resolvable" instead of a version.
+      # These pins move by hand when the ROCm wheels move.
+      - dependency-name: "torch"
+      - dependency-name: "torchaudio"
+      - dependency-name: "torchvision"
+      - dependency-name: "triton-rocm"
